@@ -1,0 +1,40 @@
+name: Deploy to Snowflake on PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  deploy:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install SnowCLI
+        run: |
+          pip install --user snowflake-cli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Create Snowflake config
+        run: |
+          mkdir -p ~/.snowflake
+          cat <<EOF > ~/.snowflake/config.toml
+          [connections.default]
+          account = "iiljdbv-rv91789"
+          user = "SAGARK"
+          password = "Infyme@25011998"
+          role = "ACCOUNTADMIN"
+          database = "DEVOPS"
+          warehouse = "COMPUTE_WH"
+          EOF
+          chmod 600 ~/.snowflake/config.toml
+
+      - name: Deploy declarative project
+        working-directory: snowflake
+        run: |
+          snow project deploy --connection default
