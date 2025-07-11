@@ -25,9 +25,9 @@ jobs:
           mkdir -p ~/.snowflake
           cat <<EOF > ~/.snowflake/config.toml
           [connections.default]
-          account = "iiljdbv-rv91789"
-          user = "SAGARK"
-          password = "Infyme@25011998"
+          account = "ehnkaoi-tc22348"
+          user = "DEVSAGAR"
+          password = "DevopsSagar@1234"
           role = "ACCOUNTADMIN"
           database = "DEVOPS"
           warehouse = "COMPUTE_WH"
