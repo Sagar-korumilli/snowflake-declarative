@@ -3,6 +3,6 @@ name = "my_snowflake_project"
 version = "0.1"
 
 [connections.default]
-database = "declarative"
+database = "DEVOPS"
 warehouse = "COMPUTE_WH"
 role = "ACCOUNTADMIN"
