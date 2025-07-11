@@ -35,6 +35,7 @@ jobs:
           warehouse = "COMPUTE_WH"
           database = "DEVOPS"
           EOF
+          chmod 0600 "/home/runner/.snowflake/config.toml"
         shell: bash
 
       - name: Deploy declarative project
