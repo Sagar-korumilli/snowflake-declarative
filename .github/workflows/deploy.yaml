@@ -37,4 +37,5 @@ jobs:
       - name: Deploy declarative project
         working-directory: snowflake
         run: |
-          snow project deploy --connection default
+          snow login --connection default
+          snow deploy --connection default
