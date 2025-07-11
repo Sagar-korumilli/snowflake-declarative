@@ -15,6 +15,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
       - name: Install SnowCLI
         run: |
           pip install --user snowflake-cli
@@ -34,7 +39,8 @@ jobs:
           EOF
           chmod 600 ~/.snowflake/config.toml
 
-      - name: Deploy declarative project
+      - name: Deploy with snow deploy
         working-directory: snowflake
         run: |
-          snow project deploy --connection default
+          snow login --connection default
+          snow deploy --connection default
