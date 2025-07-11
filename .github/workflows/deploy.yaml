@@ -15,10 +15,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
       - name: Install SnowCLI
-        run: |
-          pip install --user snowflake-cli
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        run: pip install snowflake-cli-labs
 
       - name: Create Snowflake config
         run: |
@@ -29,10 +32,10 @@ jobs:
           user = "DEVSAGAR"
           password = "DevopsSagar@1234"
           role = "ACCOUNTADMIN"
-          database = "DEVOPS"
           warehouse = "COMPUTE_WH"
+          database = "DEVOPS"
           EOF
-          chmod 600 ~/.snowflake/config.toml
+        shell: bash
 
       - name: Deploy declarative project
         working-directory: snowflake
