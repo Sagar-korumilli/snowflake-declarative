@@ -34,7 +34,7 @@ jobs:
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
           
-          for dir in snowflake/migrations/*/ ; do
+          for dir in snowflake/migration/*/ ; do
             if [ -d "$dir" ]; then
               echo "📂 Running schemachange on $dir"
               schemachange \
