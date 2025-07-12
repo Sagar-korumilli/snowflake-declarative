@@ -22,8 +22,8 @@ jobs:
         with:
           python-version: '3.8'
 
-      - name: Install schemachange v3.3.0
-        run: pip install schemachange==3.3.0
+      - name: Install schemachange
+        run: pip install schemachange
 
       - name: Run schemachange for each schema
         env:
@@ -36,12 +36,14 @@ jobs:
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
           echo "📦 Deploying to Snowflake account: $SF_ACCOUNT, role: $SF_ROLE, DB: $SF_DATABASE"
-
-          if [ -z "$(ls -A snowflake/migration 2>/dev/null)" ]; then
+      
+          # Check if the migration directory exists and is not empty
+          if [ ! -d "snowflake/migration" ] || [ -z "$(ls -A snowflake/migration 2>/dev/null)" ]; then
             echo "❌ No migration directories found in snowflake/migration/"
             exit 1
           fi
-
+      
+          # Iterate over each subdirectory in snowflake/migration
           for dir in snowflake/migration/*/ ; do
             if [ -d "$dir" ]; then
               echo "📂 Running schemachange on $dir"
@@ -53,6 +55,10 @@ jobs:
                 -w "$SF_WAREHOUSE" \
                 -d "$SF_DATABASE" \
                 -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
-                --create-change-history-table -v
+                --create-change-history-table \
+                -v || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
+            else
+              echo "⚠️ Skipping $dir: not a directory"
             fi
           done
+          echo "✅ Schema deployment completed successfully"
