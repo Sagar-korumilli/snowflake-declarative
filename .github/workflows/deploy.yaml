@@ -24,26 +24,41 @@ jobs:
       - name: Install schemachange
         run: pip install schemachange # Installs the schemachange tool
 
-      # The connections.toml creation step is still removed as we are passing
-      # all necessary connection parameters directly as command-line arguments.
-
-      - name: Run schemachange for each schema
-        # Iterates through each schema directory and applies migrations.
-        # Account, user, password, role, warehouse, and database are now
-        # hardcoded directly in the workflow file as requested.
+      - name: Create schemachange connection config
+        # Reintroducing the connections.toml creation as schemachange prefers
+        # connection details to be set here, and direct password arguments are not recognized.
+        # All credentials are hardcoded as per your request.
         #
         # WARNING: Hardcoding credentials is a security risk.
         # It is highly recommended to use GitHub Secrets for sensitive information.
+        run: |
+          mkdir -p ~/.schemachange # Creates the directory if it doesn't exist
+          cat <<EOF > ~/.schemachange/connections.toml
+          [connections.ci]
+          account = "ehnkaoi-tc22348"
+          user = "DEVSAGAR"
+          password = "DevopsSagar@1234"
+          role = "ACCOUNTADMIN"
+          warehouse = "COMPUTE_WH"
+          database = "DEVOPS"
+          EOF
+          # Set restrictive permissions for the connections file
+          chmod 600 ~/.schemachange/connections.toml
+
+      - name: Show connections.toml (for debugging, remove in production)
+        # This step is for debugging purposes to verify the file content.
+        # It's recommended to remove or comment it out in a production workflow
+        # to avoid accidentally exposing sensitive information in logs.
+        run: cat ~/.schemachange/connections.toml
+
+      - name: Run schemachange for each schema
+        # Iterates through each schema directory and applies migrations.
+        # Now using the -c ci flag to reference the connection defined in connections.toml.
         run: |
           for dir in snowflake/migration/*/ ; do
             echo "🔁 Running schemachange on $dir"
             schemachange \
               -f "$dir" \
-              --snowflake-account "ehnkaoi-tc22348" \
-              --snowflake-user "DEVSAGAR" \
-              --snowflake-password "DevopsSagar@1234" \
-              --snowflake-role "ACCOUNTADMIN" \
-              --snowflake-warehouse "COMPUTE_WH" \
-              --snowflake-database "DEVOPS" \
+              -c ci \
               --create-change-history-table # Creates the history table if it doesn't exist
           done
