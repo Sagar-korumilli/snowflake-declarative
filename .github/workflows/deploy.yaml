@@ -22,70 +22,42 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install schemachange==4.0.1 snowflake-connector-python==3.12.2
-
-      - name: Debug environment variables
-        run: |
-          echo "SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}"
-          echo "SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}"
-          echo "SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}"
-          echo "SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}"
-          echo "SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}"
-          echo "SNOWFLAKE_PASSWORD: [REDACTED]"
-
-      - name: Create and verify connections.toml
-        env:
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-        run: |
-          echo "Creating connections.toml..."
-          cat <<EOF > connections.toml
-          [snowflake]
-          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
-          user = "${{ secrets.SNOWFLAKE_USER }}"
-          role = "${{ secrets.SNOWFLAKE_ROLE }}"
-          warehouse = "${{ secrets.SNOWFLAKE_WAREHOUSE }}"
-          database = "${{ secrets.SNOWFLAKE_DATABASE }}"
-          password = "${{ secrets.SNOWFLAKE_PASSWORD }}"
-          EOF
-          echo "Contents of connections.toml:"
-          cat connections.toml
+          pip install schemachange snowflake-connector-python
 
       - name: Run schemachange for each schema
         env:
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:      ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
-          echo "📦 Deploying to Snowflake account: ${{ secrets.SNOWFLAKE_ACCOUNT }}, role: ${{ secrets.SNOWFLAKE_ROLE }}, DB: ${{ secrets.SNOWFLAKE_DATABASE }}"
+          echo "📦 Deploying to Snowflake account: $SNOWFLAKE_ACCOUNT, role: $SNOWFLAKE_ROLE, DB: $SNOWFLAKE_DATABASE"
 
           # Validate environment variables
-          if [ -z "${{ secrets.SNOWFLAKE_ACCOUNT }}" ] || [ -z "${{ secrets.SNOWFLAKE_USER }}" ] || [ -z "${{ secrets.SNOWFLAKE_ROLE }}" ] || \
-             [ -z "${{ secrets.SNOWFLAKE_WAREHOUSE }}" ] || [ -z "${{ secrets.SNOWFLAKE_DATABASE }}" ] || [ -z "${{ secrets.SNOWFLAKE_PASSWORD }}" ]; then
+          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$SNOWFLAKE_USER" ] || [ -z "$SNOWFLAKE_PASSWORD" ] || \
+             [ -z "$SNOWFLAKE_ROLE" ] || [ -z "$SNOWFLAKE_WAREHOUSE" ] || [ -z "$SNOWFLAKE_DATABASE" ]; then
             echo "❌ Missing required Snowflake environment variables"
             exit 1
           fi
 
-          # Check if migration directory exists and is not empty
-          if [ ! -d "snowflake/migration" ] || [ -z "$(ls -A snowflake/migration 2>/dev/null)" ]; then
-            echo "❌ No migration directories found in snowflake/migration/"
-            exit 1
-          fi
-
-          # Iterate over each subdirectory in snowflake/migration
           for dir in snowflake/migration/*/ ; do
             if [ -d "$dir" ]; then
               echo "📂 Running schemachange on $dir"
               schemachange \
                 -f "$dir" \
-                -c "${{ secrets.SNOWFLAKE_DATABASE }}.SCHEMACHANGE.CHANGE_HISTORY" \
+                --account   "$SNOWFLAKE_ACCOUNT" \
+                --user      "$SNOWFLAKE_USER" \
+                --password  "$SNOWFLAKE_PASSWORD" \
+                --role      "$SNOWFLAKE_ROLE" \
+                --warehouse "$SNOWFLAKE_WAREHOUSE" \
+                --database  "$SNOWFLAKE_DATABASE" \
+                --change-history-table "$SNOWFLAKE_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
-                -v \
-                --snowflake-account "${{ secrets.SNOWFLAKE_ACCOUNT }}" \
-                --snowflake-user "${{ secrets.SNOWFLAKE_USER }}" \
-                --snowflake-role "${{ secrets.SNOWFLAKE_ROLE }}" \
-                --snowflake-warehouse "${{ secrets.SNOWFLAKE_WAREHOUSE }}" \
-                --snowflake-database "${{ secrets.SNOWFLAKE_DATABASE }}" \
-                --snowflake-password "${{ secrets.SNOWFLAKE_PASSWORD }}" || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
+                -v || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
             else
               echo "⚠️ Skipping $dir: not a directory"
             fi
