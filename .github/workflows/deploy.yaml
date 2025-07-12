@@ -38,7 +38,7 @@ jobs:
           EOF
           chmod 600 ~/.schemachange/connections.toml
 
-      - name: Debug: print connections.toml
+      - name: print connections.toml
         run: cat ~/.schemachange/connections.toml
 
       - name: Run schemachange per schema
