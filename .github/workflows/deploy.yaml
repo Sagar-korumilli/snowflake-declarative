@@ -25,9 +25,6 @@ jobs:
       - name: Install schemachange v3.3.0
         run: pip install schemachange==3.3.0
 
-      - name: Verify schemachange installation
-        run: schemachange --version
-
       - name: Run schemachange for each schema
         env:
           SF_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
