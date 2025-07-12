@@ -1,91 +1,53 @@
-name: Deploy Snowflake Migrations via schemachange
+name: snowflake-devops-demo
 
 on:
   push:
     branches:
       - main
+    paths:
+      - 'migrations/**'
+
   workflow_dispatch:
 
 jobs:
-  schemachange-deploy:
+  deploy-snowflake-changes-job:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v2
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Use Python 3.8
+        uses: actions/setup-python@v2
         with:
-          python-version: '3.10'
+          python-version: 3.8
 
       - name: Install schemachange
-        run: pip install schemachange==4.0.1  # Pin to 4.0.1 to match current version
-
-      - name: Verify schemachange installation
-        run: schemachange --version || true  # Ignore exit code 2
-
-      - name: Create schemachange connection config
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: |
-          mkdir -p ~/.schemachange
-          cat <<EOF > ~/.schemachange/connections.toml
-          [connections.ci]
-          account = "${SNOWFLAKE_ACCOUNT}"
-          user = "${SNOWFLAKE_USER}"
-          password = "${SNOWFLAKE_PASSWORD}"
-          role = "${SNOWFLAKE_ROLE}"
-          warehouse = "${SNOWFLAKE_WAREHOUSE}"
-          database = "${SNOWFLAKE_DATABASE}"
-          EOF
-          chmod 600 ~/.schemachange/connections.toml
-
-      - name: Debug connections.toml
-        run: ls -la ~/.schemachange/  # Verify file creation (avoid printing file content)
-
-      - name: Test Snowflake connection
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: |
-          pip install snowflake-connector-python
-          python -c "
-          import snowflake.connector
-          conn = snowflake.connector.connect(
-              account='$SNOWFLAKE_ACCOUNT',
-              user='$SNOWFLAKE_USER',
-              password='$SNOWFLAKE_PASSWORD',
-              role='$SNOWFLAKE_ROLE',
-              warehouse='$SNOWFLAKE_WAREHOUSE',
-              database='$SNOWFLAKE_DATABASE'
-          )
-          print('Connection successful')
-          conn.close()
-          "
+        run: pip install schemachange
 
       - name: Run schemachange for each schema
+        env:
+          SF_ACCOUNT: ${{ secrets.SF_ACCOUNT }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_ROLE: ${{ secrets.SF_ROLE }}
+          SF_WAREHOUSE: ${{ secrets.SF_WAREHOUSE }}
+          SF_DATABASE: ${{ secrets.SF_DATABASE }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
         run: |
-          for dir in snowflake/migration/*/ ; do
+          echo "🔁 Starting Snowflake schema deployment..."
+          
+          for dir in migrations/*/ ; do
             if [ -d "$dir" ]; then
-              echo "🔁 Running schemachange on $dir"
+              echo "📂 Running schemachange on $dir"
               schemachange \
                 -f "$dir" \
-                -c ci \
-                --create-change-history-table \
-                --verbose
-            else
-              echo "No schema directories found in snowflake/migration/"
+                -a "$SF_ACCOUNT" \
+                -u "$SF_USERNAME" \
+                -p "$SF_PASSWORD" \
+                -r "$SF_ROLE" \
+                -w "$SF_WAREHOUSE" \
+                -d "$SF_DATABASE" \
+                -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
+                --create-change-history-table
             fi
           done
