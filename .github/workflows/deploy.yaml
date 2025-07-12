@@ -51,7 +51,7 @@ jobs:
 
               schemachange \
                 --root-folder "$dir" \
-                --change-history-table "$SNOWFLAKE_DATABASE.$SCHEMA_NAME.SCHEMACHANGE.CHANGE_HISTORY" \
+                --change-history-table "$SCHEMA_NAME.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
                 -v || { echo "❌ Failed to run schemachange on schema $SCHEMA_NAME"; exit 1; }
             else
