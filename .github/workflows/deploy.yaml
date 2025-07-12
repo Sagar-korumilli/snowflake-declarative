@@ -17,17 +17,43 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # Updated to a supported Python version
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install schemachange snowflake-connector-python
+          pip install schemachange==4.1.0 snowflake-connector-python==3.12.2
+
+      - name: Debug environment variables
+        run: |
+          echo "SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}"
+          echo "SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}"
+          echo "SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}"
+          echo "SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}"
+          echo "SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}"
+          echo "SNOWFLAKE_PASSWORD: [REDACTED]"
+
+      - name: Create and verify connections.toml
+        env:
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+        run: |
+          echo "Creating connections.toml..."
+          cat <<EOF > connections.toml
+          [snowflake]
+          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_USER }}"
+          role = "${{ secrets.SNOWFLAKE_ROLE }}"
+          warehouse = "${{ secrets.SNOWFLAKE_WAREHOUSE }}"
+          database = "${{ secrets.SNOWFLAKE_DATABASE }}"
+          password = "${{ secrets.SNOWFLAKE_PASSWORD }}"
+          EOF
+          echo "Contents of connections.toml:"
+          cat connections.toml
 
       - name: Run schemachange for each schema
         env:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_OCSP_FAIL_OPEN: "true"  # Temporary workaround for certificate issues
+          SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
           echo "📦 Deploying to Snowflake account: ${{ secrets.SNOWFLAKE_ACCOUNT }}, role: ${{ secrets.SNOWFLAKE_ROLE }}, DB: ${{ secrets.SNOWFLAKE_DATABASE }}"
@@ -38,17 +64,6 @@ jobs:
             echo "❌ Missing required Snowflake environment variables"
             exit 1
           fi
-
-          # Create connections.toml for schemachange
-          cat <<EOF > connections.toml
-          [snowflake]
-          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
-          user = "${{ secrets.SNOWFLAKE_USER }}"
-          role = "${{ secrets.SNOWFLAKE_ROLE }}"
-          warehouse = "${{ secrets.SNOWFLAKE_WAREHOUSE }}"
-          database = "${{ secrets.SNOWFLAKE_DATABASE }}"
-          password = "${{ secrets.SNOWFLAKE_PASSWORD }}"
-          EOF
 
           # Check if migration directory exists and is not empty
           if [ ! -d "snowflake/migration" ] || [ -z "$(ls -A snowflake/migration 2>/dev/null)" ]; then
@@ -64,7 +79,13 @@ jobs:
                 -f "$dir" \
                 -c "${{ secrets.SNOWFLAKE_DATABASE }}.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
-                -v || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
+                -v \
+                --snowflake-account "${{ secrets.SNOWFLAKE_ACCOUNT }}" \
+                --snowflake-user "${{ secrets.SNOWFLAKE_USER }}" \
+                --snowflake-role "${{ secrets.SNOWFLAKE_ROLE }}" \
+                --snowflake-warehouse "${{ secrets.SNOWFLAKE_WAREHOUSE }}" \
+                --snowflake-database "${{ secrets.SNOWFLAKE_DATABASE }}" \
+                --snowflake-password "${{ secrets.SNOWFLAKE_PASSWORD }}" || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
             else
               echo "⚠️ Skipping $dir: not a directory"
             fi
