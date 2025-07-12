@@ -30,7 +30,7 @@ jobs:
           SF_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SF_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SF_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-          SF_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
           for dir in snowflake/migration/*/ ; do
@@ -44,7 +44,6 @@ jobs:
                 -w "$SF_WAREHOUSE" \
                 -d "$SF_DATABASE" \
                 -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
-                 -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table -v
             fi
           done
