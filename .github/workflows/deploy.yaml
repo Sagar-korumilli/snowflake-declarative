@@ -4,61 +4,60 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # Allows manual triggering of the workflow
+  workflow_dispatch:
 
 jobs:
   schemachange-deploy:
-    runs-on: ubuntu-latest # Specifies the runner environment
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3 # Action to check out your repository code
+        uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # Ensures full history is fetched, important for schemachange
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v4 # Action to set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10' # Specify the Python version
+          python-version: '3.10'
 
       - name: Install schemachange
-        run: pip install schemachange # Installs the schemachange tool
+        run: pip install schemachange
 
       - name: Create schemachange connection config
-        # Reintroducing the connections.toml creation as schemachange prefers
-        # connection details to be set here, and direct password arguments are not recognized.
-        # All credentials are hardcoded as per your request.
-        #
-        # WARNING: Hardcoding credentials is a security risk.
-        # It is highly recommended to use GitHub Secrets for sensitive information.
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          mkdir -p ~/.schemachange # Creates the directory if it doesn't exist
+          mkdir -p ~/.schemachange
           cat <<EOF > ~/.schemachange/connections.toml
           [connections.ci]
-          account = "ehnkaoi-tc22348"
-          user = "DEVSAGAR"
-          password = "DevopsSagar@1234"
-          role = "ACCOUNTADMIN"
-          warehouse = "COMPUTE_WH"
-          database = "DEVOPS"
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
+          password = "${SNOWFLAKE_PASSWORD}"
+          role = "${SNOWFLAKE_ROLE}"
+          warehouse = "${SNOWFLAKE_WAREHOUSE}"
+          database = "${SNOWFLAKE_DATABASE}"
           EOF
-          # Set restrictive permissions for the connections file
           chmod 600 ~/.schemachange/connections.toml
 
-      - name: Show connections.toml (for debugging, remove in production)
-        # This step is for debugging purposes to verify the file content.
-        # It's recommended to remove or comment it out in a production workflow
-        # to avoid accidentally exposing sensitive information in logs.
-        run: cat ~/.schemachange/connections.toml
+      - name: Verify schemachange installation
+        run: schemachange --version
 
       - name: Run schemachange for each schema
-        # Iterates through each schema directory and applies migrations.
-        # Now using the -c ci flag to reference the connection defined in connections.toml.
         run: |
           for dir in snowflake/migration/*/ ; do
-            echo "🔁 Running schemachange on $dir"
-            schemachange \
-              -f "$dir" \
-              -c ci \
-              --create-change-history-table # Creates the history table if it doesn't exist
+            if [ -d "$dir" ]; then
+              echo "🔁 Running schemachange on $dir"
+              schemachange \
+                -f "$dir" \
+                -c ci \
+                --create-change-history-table
+            else
+              echo "No schema directories found in snowflake/migration/"
+            fi
           done
