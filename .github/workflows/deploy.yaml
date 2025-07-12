@@ -46,6 +46,6 @@ jobs:
                 -w "$SF_WAREHOUSE" \
                 -d "$SF_DATABASE" \
                 -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
-                --create-change-history-table
+                --create-change-history-table -v
             fi
           done
