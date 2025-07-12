@@ -1,4 +1,4 @@
-name: Deploy to Snowflake on PR Merge
+name: Deploy with schemachange on PR Merge
 
 on:
   pull_request:
@@ -20,25 +20,27 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install SnowCLI
-        run: pip install snowflake-cli-labs
+      - name: Install schemachange
+        run: pip install schemachange
 
-      - name: Create Snowflake config
+      - name: Run schemachange for each schema folder
+        env:
+          SF_ACCOUNT: "ehnkaoi-tc22348"
+          SF_USERNAME: "DEVSAGAR"
+          SF_PASSWORD: "DevopsSagar@1234"
+          SF_ROLE: "ACCOUNTADMIN"
+          SF_WAREHOUSE: "COMPUTE_WH"
+          SF_DATABASE: "DEVOPS"
         run: |
-          mkdir -p ~/.snowflake
-          cat <<EOF > ~/.snowflake/config.toml
-          [connections.default]
-          account = "ehnkaoi-tc22348"
-          user = "DEVSAGAR"
-          password = "DevopsSagar@1234"
-          role = "ACCOUNTADMIN"
-          warehouse = "COMPUTE_WH"
-          database = "DEVOPS"
-          EOF
-          chmod 0600 "/home/runner/.snowflake/config.toml"
-        shell: bash
-
-      - name: Deploy declarative project
-        working-directory: snowflake
-        run: |
-          snow deploy --connection default
+          for dir in snowflake/migration/*/ ; do
+            echo "Running schemachange on $dir"
+            schemachange \
+              -f "$dir" \
+              -a "$SF_ACCOUNT" \
+              -u "$SF_USERNAME" \
+              -r "$SF_ROLE" \
+              -w "$SF_WAREHOUSE" \
+              -d "$SF_DATABASE" \
+              -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
+              --create-change-history-table
+          done
