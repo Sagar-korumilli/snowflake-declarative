@@ -12,49 +12,57 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
-        
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
-          
-      - name: Use Python 3.8
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.8'
+        uses: actions/checkout@v4
 
-      - name: Install schemachange
-        run: pip install schemachange
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'  # Updated to a supported Python version
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install schemachange snowflake-connector-python
 
       - name: Run schemachange for each schema
         env:
-          SF_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SF_USERNAME: ${{ secrets.SNOWFLAKE_USER }}
-          SF_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SF_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SF_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_OCSP_FAIL_OPEN: "true"  # Temporary workaround for certificate issues
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
-          echo "📦 Deploying to Snowflake account: $SF_ACCOUNT, role: $SF_ROLE, DB: $SF_DATABASE"
-      
-          # Check if the migration directory exists and is not empty
+          echo "📦 Deploying to Snowflake account: ${{ secrets.SNOWFLAKE_ACCOUNT }}, role: ${{ secrets.SNOWFLAKE_ROLE }}, DB: ${{ secrets.SNOWFLAKE_DATABASE }}"
+
+          # Validate environment variables
+          if [ -z "${{ secrets.SNOWFLAKE_ACCOUNT }}" ] || [ -z "${{ secrets.SNOWFLAKE_USER }}" ] || [ -z "${{ secrets.SNOWFLAKE_ROLE }}" ] || \
+             [ -z "${{ secrets.SNOWFLAKE_WAREHOUSE }}" ] || [ -z "${{ secrets.SNOWFLAKE_DATABASE }}" ] || [ -z "${{ secrets.SNOWFLAKE_PASSWORD }}" ]; then
+            echo "❌ Missing required Snowflake environment variables"
+            exit 1
+          fi
+
+          # Create connections.toml for schemachange
+          cat <<EOF > connections.toml
+          [snowflake]
+          account = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_USER }}"
+          role = "${{ secrets.SNOWFLAKE_ROLE }}"
+          warehouse = "${{ secrets.SNOWFLAKE_WAREHOUSE }}"
+          database = "${{ secrets.SNOWFLAKE_DATABASE }}"
+          password = "${{ secrets.SNOWFLAKE_PASSWORD }}"
+          EOF
+
+          # Check if migration directory exists and is not empty
           if [ ! -d "snowflake/migration" ] || [ -z "$(ls -A snowflake/migration 2>/dev/null)" ]; then
             echo "❌ No migration directories found in snowflake/migration/"
             exit 1
           fi
-      
+
           # Iterate over each subdirectory in snowflake/migration
           for dir in snowflake/migration/*/ ; do
             if [ -d "$dir" ]; then
               echo "📂 Running schemachange on $dir"
               schemachange \
                 -f "$dir" \
-                -a "$SF_ACCOUNT" \
-                -u "$SF_USERNAME" \
-                -r "$SF_ROLE" \
-                -w "$SF_WAREHOUSE" \
-                -d "$SF_DATABASE" \
-                -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
+                -c "${{ secrets.SNOWFLAKE_DATABASE }}.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
                 -v || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
             else
