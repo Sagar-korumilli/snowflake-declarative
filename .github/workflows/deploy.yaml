@@ -51,17 +51,6 @@ jobs:
 
               schemachange \
                 --root-folder "$dir" \
-                --snowflake-account   "$SNOWFLAKE_ACCOUNT" \
-                --snowflake-user      "$SNOWFLAKE_USER" \
-                --snowflake-role      "$SNOWFLAKE_ROLE" \
-                --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-                --snowflake-database  "$SNOWFLAKE_DATABASE" \
-                --snowflake-schema    "$SCHEMA_NAME" \
-                --change-history-table "CHANGE_HISTORY" \
+                --change-history-table "$SNOWFLAKE_DATABASE.$SCHEMA_NAME.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
                 -v || { echo "❌ Failed to run schemachange on schema $SCHEMA_NAME"; exit 1; }
-            else
-              echo "⚠️ Skipping $dir: not a directory"
-            fi
-          done
-          echo "✅ All schema deployments completed successfully"
