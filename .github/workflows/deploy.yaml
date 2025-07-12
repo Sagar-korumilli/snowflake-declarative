@@ -15,13 +15,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
-      - name: Use Python 3.8
-        uses: actions/setup-python@v2
+      - name: Use Python 3.8.x
+        uses: actions/setup-python@v2.2.1
         with:
-          python-version: 3.8
+          python-version: 3.8.x
 
-      - name: Install schemachange
-        run: pip install schemachange
+      - name: Install schemachange v3.3.0
+        run: pip install schemachange==3.3.0
 
       - name: Run schemachange for each schema
         env:
@@ -33,7 +33,6 @@ jobs:
           SF_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
           echo "🔁 Starting Snowflake schema deployment..."
-          
           for dir in snowflake/migration/*/ ; do
             if [ -d "$dir" ]; then
               echo "📂 Running schemachange on $dir"
@@ -46,6 +45,7 @@ jobs:
                 -w "$SF_WAREHOUSE" \
                 -d "$SF_DATABASE" \
                 -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
+                 -c "$SF_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table -v
             fi
           done
