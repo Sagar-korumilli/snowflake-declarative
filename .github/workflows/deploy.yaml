@@ -38,7 +38,10 @@ jobs:
           EOF
           chmod 600 ~/.schemachange/connections.toml
 
-      - name: Run schemachange per schema folder
+      - name: Debug: print connections.toml
+        run: cat ~/.schemachange/connections.toml
+
+      - name: Run schemachange per schema
         run: |
           for dir in snowflake/migration/*/ ; do
             echo "🔁 Running schemachange on $dir"
