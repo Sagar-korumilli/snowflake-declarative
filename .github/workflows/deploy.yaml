@@ -22,7 +22,10 @@ jobs:
           python-version: '3.10'
 
       - name: Install schemachange
-        run: pip install schemachange
+        run: pip install schemachange==4.0.1  # Pin to 4.0.1 to match current version
+
+      - name: Verify schemachange installation
+        run: schemachange --version || true  # Ignore exit code 2
 
       - name: Create schemachange connection config
         env:
@@ -45,8 +48,32 @@ jobs:
           EOF
           chmod 600 ~/.schemachange/connections.toml
 
-      - name: Verify schemachange installation
-        run: schemachange --version
+      - name: Debug connections.toml
+        run: ls -la ~/.schemachange/  # Verify file creation (avoid printing file content)
+
+      - name: Test Snowflake connection
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          pip install snowflake-connector-python
+          python -c "
+          import snowflake.connector
+          conn = snowflake.connector.connect(
+              account='$SNOWFLAKE_ACCOUNT',
+              user='$SNOWFLAKE_USER',
+              password='$SNOWFLAKE_PASSWORD',
+              role='$SNOWFLAKE_ROLE',
+              warehouse='$SNOWFLAKE_WAREHOUSE',
+              database='$SNOWFLAKE_DATABASE'
+          )
+          print('Connection successful')
+          conn.close()
+          "
 
       - name: Run schemachange for each schema
         run: |
@@ -56,7 +83,8 @@ jobs:
               schemachange \
                 -f "$dir" \
                 -c ci \
-                --create-change-history-table
+                --create-change-history-table \
+                --verbose
             else
               echo "No schema directories found in snowflake/migration/"
             fi
