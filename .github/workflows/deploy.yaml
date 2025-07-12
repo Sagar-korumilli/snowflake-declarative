@@ -1,12 +1,15 @@
-name: Deploy with schemachange on PR Merge
+name: Deploy Snowflake Migrations via schemachange
 
 on:
-  pull_request:
-    types: [closed]
+  push:
+    branches:
+      - main
+    paths:
+      - 'snowflake/migration/**'
+  workflow_dispatch:
 
 jobs:
-  deploy:
-    if: github.event.pull_request.merged == true
+  schemachange-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,11 +26,11 @@ jobs:
       - name: Install schemachange
         run: pip install schemachange
 
-      - name: Set up schemachange connection config
+      - name: Create schemachange connection config
         run: |
           mkdir -p ~/.schemachange
           cat <<EOF > ~/.schemachange/connections.toml
-          [connections.dev]
+          [connections.ci]
           account = "ehnkaoi-tc22348"
           user = "DEVSAGAR"
           password = "DevopsSagar@1234"
@@ -38,15 +41,15 @@ jobs:
           EOF
           chmod 600 ~/.schemachange/connections.toml
 
-      - name: print connections.toml
+      - name: show connections.toml
         run: cat ~/.schemachange/connections.toml
 
-      - name: Run schemachange per schema
+      - name: Run schemachange for each schema
         run: |
           for dir in snowflake/migration/*/ ; do
             echo "🔁 Running schemachange on $dir"
             schemachange \
               -f "$dir" \
-              -c dev \
+              -c ci \
               --create-change-history-table
           done
