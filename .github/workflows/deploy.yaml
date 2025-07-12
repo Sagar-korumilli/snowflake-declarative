@@ -35,7 +35,6 @@ jobs:
           role = "ACCOUNTADMIN"
           warehouse = "COMPUTE_WH"
           database = "DEVOPS"
-          schema = "SCHEMACHANGE"
           EOF
           chmod 600 ~/.schemachange/connections.toml
 
