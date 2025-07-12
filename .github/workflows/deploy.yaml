@@ -40,7 +40,6 @@ jobs:
                 -f "$dir" \
                 -a "$SF_ACCOUNT" \
                 -u "$SF_USERNAME" \
-                -p "$SF_PASSWORD" \
                 -r "$SF_ROLE" \
                 -w "$SF_WAREHOUSE" \
                 -d "$SF_DATABASE" \
