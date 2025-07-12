@@ -23,7 +23,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install schemachange snowflake-connector-python
-          schemachange -h
 
       - name: Run schemachange for each schema
         env:
@@ -49,13 +48,12 @@ jobs:
             if [ -d "$dir" ]; then
               echo "📂 Running schemachange on $dir"
               schemachange \
-                -f "$dir" \
-                --account   "$SNOWFLAKE_ACCOUNT" \
-                --user      "$SNOWFLAKE_USER" \
-                --password  "$SNOWFLAKE_PASSWORD" \
-                --role      "$SNOWFLAKE_ROLE" \
-                --warehouse "$SNOWFLAKE_WAREHOUSE" \
-                --database  "$SNOWFLAKE_DATABASE" \
+                --root-folder "$dir" \
+                --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+                --snowflake-user "$SNOWFLAKE_USER" \
+                --snowflake-role "$SNOWFLAKE_ROLE" \
+                --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+                --snowflake-database "$SNOWFLAKE_DATABASE" \
                 --change-history-table "$SNOWFLAKE_DATABASE.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
                 -v || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
