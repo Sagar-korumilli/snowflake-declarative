@@ -54,3 +54,9 @@ jobs:
                 --change-history-table "$SNOWFLAKE_DATABASE.$SCHEMA_NAME.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
                 -v || { echo "❌ Failed to run schemachange on schema $SCHEMA_NAME"; exit 1; }
+            else
+              echo "⚠️ Skipping $dir: not a directory"
+            fi
+          done
+
+          echo "✅ All schema deployments completed successfully"
