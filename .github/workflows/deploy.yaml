@@ -47,13 +47,19 @@ jobs:
           for dir in snowflake/migration/*/ ; do
             if [ -d "$dir" ]; then
               SCHEMA_NAME=$(basename "$dir")
-              echo "📂 Deploying migration for schema: $SCHEMA_NAME"
+              echo "📂 Running schemachange on $dir (schema: $SCHEMA_NAME)"
 
-              schemachange \
+              schemachange deploy \
                 --root-folder "$dir" \
+                --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+                --snowflake-user "$SNOWFLAKE_USER" \
+                --snowflake-password "$SNOWFLAKE_PASSWORD" \
+                --snowflake-role "$SNOWFLAKE_ROLE" \
+                --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+                --snowflake-database "$SNOWFLAKE_DATABASE" \
                 --change-history-table "$SCHEMA_NAME.SCHEMACHANGE.CHANGE_HISTORY" \
                 --create-change-history-table \
-                -v || { echo "❌ Failed to run schemachange on schema $SCHEMA_NAME"; exit 1; }
+                -v || { echo "❌ Failed to run schemachange on $dir"; exit 1; }
             else
               echo "⚠️ Skipping $dir: not a directory"
             fi
