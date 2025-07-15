@@ -88,8 +88,6 @@ jobs:
           done
 
       - name: Apply incremental migrations
-        # This step applies incremental migration scripts for each discovered schema.
-        # It uses the 'snowflake/migrations' folder.
         if: github.event_name == 'workflow_dispatch' || steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
