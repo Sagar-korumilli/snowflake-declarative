@@ -71,15 +71,15 @@ jobs:
             echo "⚙️ Processing initial setup for schema: $schema_name"
             mkdir -p .schemachange
             cat <<EOF > .schemachange/connections.toml
-            [connections]
-                [connections.default]
-                account = "${SNOWFLAKE_ACCOUNT}"
-                user = "${SNOWFLAKE_USER}"
-                password = "${SNOWFLAKE_PASSWORD}"
-                role = "${SNOWFLAKE_ROLE}"
-                warehouse = "${SNOWFLAKE_WAREHOUSE}"
-                database = "${SNOWFLAKE_DATABASE}"
-                schema = "${schema_name}"
+              [connections]
+                  [connections.default]
+                  account = "${SNOWFLAKE_ACCOUNT}"
+                  user = "${SNOWFLAKE_USER}"
+                  password = "${SNOWFLAKE_PASSWORD}"
+                  role = "${SNOWFLAKE_ROLE}"
+                  warehouse = "${SNOWFLAKE_WAREHOUSE}"
+                  database = "${SNOWFLAKE_DATABASE}"
+                  schema = "${schema_name}"
             EOF
             chmod 0600 .schemachange/connections.toml
             schemachange deploy \
@@ -109,15 +109,15 @@ jobs:
             echo "📄 Processing migrations for schema: $schema_name"
             mkdir -p .schemachange
             cat <<EOF > .schemachange/connections.toml
-            [connections]
-              [connections.default]
-              account = "${SNOWFLAKE_ACCOUNT}"
-              user = "${SNOWFLAKE_USER}"
-              password = "${SNOWFLAKE_PASSWORD}"
-              role = "${SNOWFLAKE_ROLE}"
-              warehouse = "${SNOWFLAKE_WAREHOUSE}"
-              database = "${SNOWFLAKE_DATABASE}"
-              schema = "${schema_name}"
+              [connections]
+                [connections.default]
+                account = "${SNOWFLAKE_ACCOUNT}"
+                user = "${SNOWFLAKE_USER}"
+                password = "${SNOWFLAKE_PASSWORD}"
+                role = "${SNOWFLAKE_ROLE}"
+                warehouse = "${SNOWFLAKE_WAREHOUSE}"
+                database = "${SNOWFLAKE_DATABASE}"
+                schema = "${schema_name}"
             EOF
             chmod 0600 .schemachange/connections.toml
             schemachange deploy \
