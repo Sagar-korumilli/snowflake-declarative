@@ -82,7 +82,7 @@ jobs:
               --snowflake-role "$SNOWFLAKE_ROLE" \
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.${schema_name}_CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
               --create-change-history-table \
               -v
           done
@@ -113,7 +113,7 @@ jobs:
                 --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
                 --snowflake-database "$SNOWFLAKE_DATABASE" \
                 --snowflake-schema "$schema_name" \
-                --change-history-table "${SNOWFLAKE_DATABASE}.${schema_name}_CHANGE_HISTORY" \
+                --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
                 -v
             else
               echo "ℹ️ No migration folder found for schema: $schema_name. Skipping incremental migrations for this schema."
