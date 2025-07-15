@@ -47,6 +47,7 @@ jobs:
         id: get-schemas
         run: |
           # Extract schema names (e.g., 'hr') from filenames like V001__hr__full_setup.sql
+          # The -maxdepth 1 ensures it only looks directly in snowflake/setup and snowflake/migrations
           SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
           echo "Discovered schemas in setup: $SETUP_SCHEMAS"
           MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
@@ -78,11 +79,12 @@ jobs:
               --root-folder snowflake/setup \
               --snowflake-account "$SNOWFLAKE_ACCOUNT" \
               --snowflake-user "$SNOWFLAKE_USER" \
+              --snowflake-password "$SNOWFLAKE_PASSWORD" \
               --snowflake-role "$SNOWFLAKE_ROLE" \
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.${schema_name}_CHANGE_HISTORY" \
               --create-change-history-table \
               -v
           done
@@ -108,11 +110,12 @@ jobs:
               --root-folder snowflake/migrations \
               --snowflake-account "$SNOWFLAKE_ACCOUNT" \
               --snowflake-user "$SNOWFLAKE_USER" \
+              --snowflake-password "$SNOWFLAKE_PASSWORD" \
               --snowflake-role "$SNOWFLAKE_ROLE" \
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.${schema_name}_CHANGE_HISTORY" \
               -v
           done
 
