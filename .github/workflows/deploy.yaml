@@ -88,7 +88,7 @@ jobs:
             database = "${SNOWFLAKE_DATABASE}"
             schema = "${schema_name}" # Set the default schema for this specific run
           EOF
-
+            chmod 0600 ".schemachange/connections.toml"
             # Execute schemachange for the 'setup' folder.
             # It will process relevant files for this schema based on its internal logic
             # and the SNOWFLAKE_SCHEMA context.
