@@ -53,10 +53,6 @@ CREATE OR REPLACE SEQUENCE hr.emp_seq START = 5000 INCREMENT = 1;
 CREATE OR REPLACE FILE FORMAT hr.json_ff
   TYPE = 'JSON';
 
-CREATE OR REPLACE STAGE hr.employee_stage
-  URL = 's3://my-bucket/hr/'
-  FILE_FORMAT = hr.json_ff
-  CREDENTIALS = (AWS_KEY_ID='{{AWS_KEY}}' AWS_SECRET_KEY='{{AWS_SECRET}}');
 
 -- 8. Grants
 GRANT SELECT ON ALL TABLES IN SCHEMA hr TO ROLE hr_analyst;
