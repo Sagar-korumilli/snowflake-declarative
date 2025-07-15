@@ -12,9 +12,6 @@ CREATE WAREHOUSE IF NOT EXISTS hr_wh
 
 -- 3. Role & grants
 CREATE ROLE IF NOT EXISTS hr_analyst;
-GRANT USAGE ON WAREHOUSE hr_wh TO ROLE hr_analyst;
-GRANT USAGE ON DATABASE TPCH TO ROLE hr_analyst;
-GRANT USAGE ON SCHEMA TPCH.hr TO ROLE hr_analyst;
 
 -- 4. Create tables
 CREATE OR REPLACE TABLE hr.employees (
