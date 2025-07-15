@@ -49,8 +49,4 @@ GROUP BY o.order_id, o.order_date;
 -- 6. Sequence
 CREATE OR REPLACE SEQUENCE sales.order_seq START = 1000 INCREMENT = 1;
 
--- 7. File format & stage
-CREATE OR REPLACE FILE FORMAT sales.csv_ff
-  TYPE = ‘CSV’
-  FIELD_DELIMITER = ‘,’
-  SKIP_HEADER = 1;
+
