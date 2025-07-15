@@ -77,7 +77,7 @@ jobs:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table CHANGE_HISTORY \
+              --change-history-table "${schema_name}.CHANGE_HISTORY" \
               --create-change-history-table \
               -v
           done
@@ -105,7 +105,7 @@ jobs:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table CHANGE_HISTORY \
+              --change-history-table "${schema_name}.CHANGE_HISTORY" \
               -v
           done
 
