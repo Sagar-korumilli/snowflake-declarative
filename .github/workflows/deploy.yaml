@@ -28,6 +28,13 @@ jobs:
           pip install schemachange==4.0.1 snowflake-connector-python
 
       - name: Validate Snowflake env vars
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
             if [ -z "${!v}" ]; then
@@ -35,13 +42,6 @@ jobs:
               exit 1
             fi
           done
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:    ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE:    ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
 
       - name: Get all unique schemas from setup and migrations folders
         id: get-schemas
@@ -51,36 +51,36 @@ jobs:
           MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $1}' | sort -u)
           echo "Discovered schemas in migrations: $MIGRATION_SCHEMAS"
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-          echo "Combined unique schemas for deployment: $ALL_SCHEMAS"
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
+          echo "Combined unique schemas for deployment: $ALL_SCHEMAS"
 
       - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.get-schemas.outputs.ALL_SCHEMAS != '' }}
+        if: github.event_name == 'workflow_dispatch' || steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
-          SNOWFLAKE_ACCOUNT:       ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:          ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD:      ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE:          ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:     ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:      ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
           set -euo pipefail
-          echo "🚀 Running bootstrap for each schema..."
+          echo "🚀 Running bootstrap for each schema using files in snowflake/setup/..."
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "⚙️ Processing initial setup for schema: $schema_name"
             mkdir -p .schemachange
-            cat <<'EOF' > .schemachange/connections.toml
-[connections]
-  [connections.default]
-  account  = "${SNOWFLAKE_ACCOUNT}"
-  user     = "${SNOWFLAKE_USER}"
-  password = "${SNOWFLAKE_PASSWORD}"
-  role     = "${SNOWFLAKE_ROLE}"
-  warehouse= "${SNOWFLAKE_WAREHOUSE}"
-  database = "${SNOWFLAKE_DATABASE}"
-  schema   = "${schema_name}"
-EOF
+            cat <<EOF > .schemachange/connections.toml
+            [connections]
+                [connections.default]
+                account = "${SNOWFLAKE_ACCOUNT}"
+                user = "${SNOWFLAKE_USER}"
+                password = "${SNOWFLAKE_PASSWORD}"
+                role = "${SNOWFLAKE_ROLE}"
+                warehouse = "${SNOWFLAKE_WAREHOUSE}"
+                database = "${SNOWFLAKE_DATABASE}"
+                schema = "${schema_name}"
+            EOF
             chmod 0600 .schemachange/connections.toml
             schemachange deploy \
               --root-folder snowflake/setup \
@@ -93,43 +93,42 @@ EOF
           done
 
       - name: Apply incremental migrations
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.get-schemas.outputs.ALL_SCHEMAS != '' }}
+        if: github.event_name == 'workflow_dispatch' || steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
-          SNOWFLAKE_ACCOUNT:       ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:          ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD:      ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE:          ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:     ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:      ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
           set -euo pipefail
-          echo "🔁 Applying incremental migrations..."
+          echo "🔁 Applying incremental migrations for each schema using files in snowflake/migrations/..."
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "📄 Processing migrations for schema: $schema_name"
             mkdir -p .schemachange
-            cat <<'EOF' > .schemachange/connections.toml
-[connections]
-  [connections.default]
-  account  = "${SNOWFLAKE_ACCOUNT}"
-  user     = "${SNOWFLAKE_USER}"
-  password = "${SNOWFLAKE_PASSWORD}"
-  role     = "${SNOWFLAKE_ROLE}"
-  warehouse= "${SNOWFLAKE_WAREHOUSE}"
-  database = "${SNOWFLAKE_DATABASE}"
-  schema   = "${schema_name}"
-EOF
+            cat <<EOF > .schemachange/connections.toml
+            [connections]
+              [connections.default]
+              account = "${SNOWFLAKE_ACCOUNT}"
+              user = "${SNOWFLAKE_USER}"
+              password = "${SNOWFLAKE_PASSWORD}"
+              role = "${SNOWFLAKE_ROLE}"
+              warehouse = "${SNOWFLAKE_WAREHOUSE}"
+              database = "${SNOWFLAKE_DATABASE}"
+              schema = "${schema_name}"
+            EOF
             chmod 0600 .schemachange/connections.toml
             schemachange deploy \
               --root-folder snowflake/migrations \
               --connection-name default \
               --connections-file-path .schemachange/connections.toml \
               --change-history-table CHANGE_HISTORY \
-              --create-change-history-table \
               -v
             rm .schemachange/connections.toml
           done
 
       - name: Nothing to do
-        if: ${{ github.event_name != 'workflow_dispatch' && steps.get-schemas.outputs.ALL_SCHEMAS == '' }}
+        if: github.event_name != 'workflow_dispatch' && steps.get-schemas.outputs.ALL_SCHEMAS == ''
         run: echo "✔️ No schema files found in the repository. Skipping deployment."
