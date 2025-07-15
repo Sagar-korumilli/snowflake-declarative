@@ -56,9 +56,4 @@ CREATE OR REPLACE FILE FORMAT hr.json_ff
 -- !!! ADD THIS LINE TO CREATE THE STAGE !!!
 CREATE OR REPLACE STAGE hr.employee_stage;
 
--- 8. Grants
-GRANT SELECT ON ALL TABLES IN SCHEMA hr TO ROLE hr_analyst;
-GRANT SELECT ON ALL VIEWS IN SCHEMA hr TO ROLE hr_analyst;
-GRANT USAGE ON SEQUENCE hr.emp_seq TO ROLE hr_analyst;
-GRANT USAGE ON FILE FORMAT hr.json_ff TO ROLE hr_analyst;
-GRANT USAGE ON STAGE hr.employee_stage TO ROLE hr_analyst;
+
