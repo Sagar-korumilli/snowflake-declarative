@@ -1,31 +1,53 @@
-name: snowflake-devops-demo
+name: ❄️ Snowflake Full Deploy
 
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:
 
 jobs:
-  deploy-snowflake-changes:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # need at least 2 commits for diff
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install schemachange snowflake-connector-python
 
-      - name: Run schemachange for each schema
+      # 1) Detect whether any "setup" files changed
+      - name: Did setup files change?
+        id: detect-setup
+        run: |
+          echo "Looking for changes under snowflake/setup/ …"
+          CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
+                    | grep -E '^snowflake/setup/.*\.sql' || true)
+          echo "::set-output name=run::${{ steps.detect-setup.outputs.run || 'false' }}"
+          if [ -n "$CHANGED" ]; then
+            echo "::set-output name=run::true"
+            echo "→ setup files changed:"
+            echo "$CHANGED"
+          else
+            echo "::set-output name=run::false"
+          fi
+
+      # 2) Bootstrap step (only if setup files changed or on manual dispatch)
+      - name: Bootstrap all schemas
+        if: >
+          github.event_name == 'workflow_dispatch' ||
+          steps.detect-setup.outputs.run == 'true'
         env:
           SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
@@ -35,37 +57,63 @@ jobs:
           SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
-          set -euo pipefail
-          echo "🔁 Starting Snowflake schema deployment..."
-          
-          # Validate env
-          for var in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!var:-}" ]; then
-              echo "❌ Missing $var"; exit 1
-            fi
-          done
+          echo "🚀 Running initial bootstrap (setup)…"
+          schemachange \
+            --root-folder snowflake/setup \
+            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+            --snowflake-user "$SNOWFLAKE_USER" \
+            --snowflake-role "$SNOWFLAKE_ROLE" \
+            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+            --snowflake-database "$SNOWFLAKE_DATABASE" \
+            --change-history-table BOOTSTRAP_HISTORY \
+            --create-change-history-table \
+            -v
+          echo "✅ Bootstrap complete."
 
-          # Loop each folder under snowflake/migration
-          for dir in snowflake/migration/*; do
-            if [ -d "$dir" ]; then
-              schema=$(basename "$dir")
-              history_table="${SNOWFLAKE_DATABASE}.${schema}.CHANGE_HISTORY"
+      # 3) Detect whether any migration files changed
+      - name: Did migration files change?
+        id: detect-migration
+        run: |
+          echo "Looking for changes under snowflake/migration/ …"
+          MIG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
+                | grep -E '^snowflake/migration/.*\.sql' || true)
+          if [ -n "$MIG" ]; then
+            echo "::set-output name=run::true"
+            echo "→ migration files changed:"
+            echo "$MIG"
+          else
+            echo "::set-output name=run::false"
+          fi
 
-              echo "📂 Deploying schema '$schema' (root-folder=$dir)"
-              schemachange \
-                --root-folder "$dir" \
-                --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-                --snowflake-user "$SNOWFLAKE_USER" \
-                --snowflake-role "$SNOWFLAKE_ROLE" \
-                --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-                --snowflake-database "$SNOWFLAKE_DATABASE" \
-                --snowflake-schema "$schema" \
-                --change-history-table "$history_table" \
-                --create-change-history-table \
-                -v
-            else
-              echo "⚠️  Skipping $dir (not a directory)"
-            fi
-          done
+      # 4) Incremental migrations (only if migration files changed)
+      - name: Apply incremental migrations
+        if: steps.detect-migration.outputs.run == 'true'
+        env:
+          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:      ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_OCSP_FAIL_OPEN: "true"
+        run: |
+          echo "🔁 Running incremental migrations…"
+          schemachange \
+            --root-folder snowflake/migration \
+            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+            --snowflake-user "$SNOWFLAKE_USER" \
+            --snowflake-role "$SNOWFLAKE_ROLE" \
+            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+            --snowflake-database "$SNOWFLAKE_DATABASE" \
+            --change-history-table CHANGE_HISTORY \
+            --create-change-history-table \
+            -v
+          echo "✅ Incrementals complete."
 
-          echo "✅ All schemas deployed successfully."
+      # 5) Nothing to do?
+      - name: Nothing to run
+        if: >
+          steps.detect-setup.outputs.run == 'false' &&
+          steps.detect-migration.outputs.run == 'false' &&
+          github.event_name != 'workflow_dispatch'
+        run: echo "✔️ No relevant SQL changes detected; skipping."
