@@ -3,7 +3,7 @@ name: ❄️ Snowflake Full Deploy
 on:
   push:
     branches:
-      - master
+      - main
   workflow_dispatch:
 
 jobs:
@@ -12,38 +12,58 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # 1) Checkout at depth=0 so we have full history
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # need at least 2 commits for diff
+          fetch-depth: 0
 
+      # 2) Python setup
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      # 3) Install dependencies
+      - name: Install schemachange & connector
         run: |
           python -m pip install --upgrade pip
           pip install schemachange snowflake-connector-python
 
-      # 1) Detect whether any "setup" files changed
+      # 4) Validate required env vars
+      - name: Validate env
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v:-}" ]; then
+              echo "❌ Missing $v" && exit 1
+            fi
+          done
+        env:
+          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:      ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
+
+      # 5) Detect changes in setup/ folder
       - name: Did setup files change?
         id: detect-setup
         run: |
-          echo "Looking for changes under snowflake/setup/ …"
-          CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
-                    | grep -E '^snowflake/setup/.*\.sql' || true)
-          echo "::set-output name=run::${{ steps.detect-setup.outputs.run || 'false' }}"
-          if [ -n "$CHANGED" ]; then
-            echo "::set-output name=run::true"
-            echo "→ setup files changed:"
-            echo "$CHANGED"
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # initial push — treat all setup scripts as "changed"
+            echo "run=true" >> $GITHUB_OUTPUT
           else
-            echo "::set-output name=run::false"
+            CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
+                      | grep -E '^snowflake/setup/.*\.sql' || true)
+            if [ -n "$CHANGED" ]; then
+              echo "run=true" >> $GITHUB_OUTPUT
+            else
+              echo "run=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
-      # 2) Bootstrap step (only if setup files changed or on manual dispatch)
+      # 6) Bootstrap all schemas (if needed)
       - name: Bootstrap all schemas
         if: >
           github.event_name == 'workflow_dispatch' ||
@@ -57,7 +77,7 @@ jobs:
           SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
-          echo "🚀 Running initial bootstrap (setup)…"
+          echo "🚀 Bootstrapping schemas…"
           schemachange \
             --root-folder snowflake/setup \
             --snowflake-account "$SNOWFLAKE_ACCOUNT" \
@@ -70,22 +90,24 @@ jobs:
             -v
           echo "✅ Bootstrap complete."
 
-      # 3) Detect whether any migration files changed
+      # 7) Detect changes in migration/ folder
       - name: Did migration files change?
         id: detect-migration
         run: |
-          echo "Looking for changes under snowflake/migration/ …"
-          MIG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
-                | grep -E '^snowflake/migration/.*\.sql' || true)
-          if [ -n "$MIG" ]; then
-            echo "::set-output name=run::true"
-            echo "→ migration files changed:"
-            echo "$MIG"
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # initial push — treat all migration scripts as "changed"
+            echo "run=true" >> $GITHUB_OUTPUT
           else
-            echo "::set-output name=run::false"
+            MIG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
+                  | grep -E '^snowflake/migration/.*\.sql' || true)
+            if [ -n "$MIG" ]; then
+              echo "run=true" >> $GITHUB_OUTPUT
+            else
+              echo "run=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
-      # 4) Incremental migrations (only if migration files changed)
+      # 8) Apply incremental migrations (if needed)
       - name: Apply incremental migrations
         if: steps.detect-migration.outputs.run == 'true'
         env:
@@ -97,7 +119,7 @@ jobs:
           SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
-          echo "🔁 Running incremental migrations…"
+          echo "🔁 Applying incremental migrations…"
           schemachange \
             --root-folder snowflake/migration \
             --snowflake-account "$SNOWFLAKE_ACCOUNT" \
@@ -108,12 +130,12 @@ jobs:
             --change-history-table CHANGE_HISTORY \
             --create-change-history-table \
             -v
-          echo "✅ Incrementals complete."
+          echo "✅ Incremental migrations complete."
 
-      # 5) Nothing to do?
-      - name: Nothing to run
+      # 9) Skip if nothing to run and not manual
+      - name: Nothing to do
         if: >
           steps.detect-setup.outputs.run == 'false' &&
           steps.detect-migration.outputs.run == 'false' &&
           github.event_name != 'workflow_dispatch'
-        run: echo "✔️ No relevant SQL changes detected; skipping."
+        run: echo "✔️ No setup or migration changes detected; skipping."
