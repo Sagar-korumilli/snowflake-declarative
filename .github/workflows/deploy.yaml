@@ -112,7 +112,7 @@ jobs:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.${schema_name}_CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.${schema_name}_CHANGE_HISTORY" \
               -v
           done
 
