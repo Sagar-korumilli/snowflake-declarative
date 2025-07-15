@@ -13,6 +13,13 @@ CREATE WAREHOUSE IF NOT EXISTS hr_wh
 -- 3. Role & grants
 CREATE ROLE IF NOT EXISTS hr_analyst;
 
+-- Grant usage on the database being deployed to (populated by schemachange's --vars)
+GRANT USAGE ON WAREHOUSE hr_wh TO ROLE hr_analyst;
+GRANT USAGE ON DATABASE {{ SNOWFLAKE_DATABASE }} TO ROLE hr_analyst;
+-- Grant usage on the specific HR schema within that database
+GRANT USAGE ON SCHEMA {{ SNOWFLAKE_DATABASE }}.hr TO ROLE hr_analyst;
+
+
 -- 4. Create tables
 CREATE OR REPLACE TABLE hr.employees (
   employee_id INT,
@@ -50,6 +57,8 @@ CREATE OR REPLACE SEQUENCE hr.emp_seq START = 5000 INCREMENT = 1;
 CREATE OR REPLACE FILE FORMAT hr.json_ff
   TYPE = 'JSON';
 
+-- !!! ADD THIS LINE TO CREATE THE STAGE !!!
+CREATE OR REPLACE STAGE hr.employee_stage;
 
 -- 8. Grants
 GRANT SELECT ON ALL TABLES IN SCHEMA hr TO ROLE hr_analyst;
