@@ -36,9 +36,18 @@ jobs:
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
+          export SNOWFLAKE_ACCOUNT
+          export SNOWFLAKE_USER
+          export SNOWFLAKE_PASSWORD
+          export SNOWFLAKE_ROLE
+          export SNOWFLAKE_WAREHOUSE
+          export SNOWFLAKE_DATABASE
+
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
             if [ -z "${!v}" ]; then
               echo "❌ Missing $v" && exit 1
+            else
+              echo "✅ $v is set"
             fi
           done
 
