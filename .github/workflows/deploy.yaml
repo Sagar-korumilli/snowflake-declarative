@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Get full history for git diff if needed, though we primarily rely on file presence now
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install schemachange snowflake-connector-python
+          pip install schemachange==4.0.1 snowflake-connector-python
 
       - name: Validate Snowflake env vars
         env:
@@ -46,17 +46,13 @@ jobs:
       - name: Get all unique schemas from setup and migrations folders
         id: get-schemas
         run: |
-          # This will get ALL schemas that have setup or migration files, regardless of specific commit changes
           SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $1}' | sort -u)
           echo "Discovered schemas in setup: $SETUP_SCHEMAS"
-
           MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $1}' | sort -u)
           echo "Discovered schemas in migrations: $MIGRATION_SCHEMAS"
-
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
           echo "Combined unique schemas for deployment: $ALL_SCHEMAS"
-
 
       - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
         if: github.event_name == 'workflow_dispatch' || steps.get-schemas.outputs.ALL_SCHEMAS != ''
@@ -69,14 +65,10 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
-          set -euo pipefail # Exit immediately if a command exits with a non-zero status or undefined variables
+          set -euo pipefail
           echo "🚀 Running bootstrap for each schema using files in snowflake/setup/..."
-          
-          # Iterate over each unique schema discovered
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "⚙️ Processing initial setup for schema: $schema_name"
-
-            # Create a temporary connections.toml for each schema run
             mkdir -p .schemachange
             cat > .schemachange/connections.toml <<EOF
               [connections]
@@ -87,21 +79,16 @@ jobs:
                 role = "${SNOWFLAKE_ROLE}"
                 warehouse = "${SNOWFLAKE_WAREHOUSE}"
                 database = "${SNOWFLAKE_DATABASE}"
-                schema = "${schema_name}" # Set the default schema for this specific run
+                schema = "${schema_name}"
             EOF
-            chmod 0600 ".schemachange/connections.toml"
-            # Execute schemachange for the 'setup' folder.
-            # It will process relevant files for this schema based on its internal logic
-            # and the SNOWFLAKE_SCHEMA context.
+            chmod 0600 .schemachange/connections.toml
             schemachange deploy \
               --root-folder snowflake/setup \
               --connection-name default \
               --connections-file-path .schemachange/connections.toml \
               --change-history-table CHANGE_HISTORY \
               --create-change-history-table \
-              -v # Enable verbose output for more details
-            
-            # Clean up connections.toml for the next iteration (optional but good practice)
+              -v
             rm .schemachange/connections.toml
           done
 
@@ -118,41 +105,31 @@ jobs:
         run: |
           set -euo pipefail
           echo "🔁 Applying incremental migrations for each schema using files in snowflake/migrations/..."
-
-          # Iterate over each unique schema discovered
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "📄 Processing migrations for schema: $schema_name"
-
-            # Create a temporary connections.toml for each schema run
             mkdir -p .schemachange
             cat > .schemachange/connections.toml <<EOF
-              [connections]
-                [connections.default]
-                account = "${SNOWFLAKE_ACCOUNT}"
-                user = "${SNOWFLAKE_USER}"
-                password = "${SNOWFLAKE_PASSWORD}"
-                role = "${SNOWFLAKE_ROLE}"
-                warehouse = "${SNOWFLAKE_WAREHOUSE}"
-                database = "${SNOWFLAKE_DATABASE}"
-                schema = "${schema_name}" # Set the default schema for this specific run
+            [connections]
+              [connections.default]
+              account = "${SNOWFLAKE_ACCOUNT}"
+              user = "${SNOWFLAKE_USER}"
+              password = "${SNOWFLAKE_PASSWORD}"
+              role = "${SNOWFLAKE_ROLE}"
+              warehouse = "${SNOWFLAKE_WAREHOUSE}"
+              database = "${SNOWFLAKE_DATABASE}"
+              schema = "${schema_name}"
             EOF
-
-            # Execute schemachange for the 'migrations' folder.
-            # It will process relevant migration files for this schema.
+            chmod 0600 .schemachange/connections.toml
             schemachange deploy \
               --root-folder snowflake/migrations \
               --connection-name default \
               --connections-file-path .schemachange/connections.toml \
               --change-history-table CHANGE_HISTORY \
               --create-change-history-table \
-              -v # Enable verbose output for more details
-            
-            # Clean up connections.toml
+              -v
             rm .schemachange/connections.toml
           done
 
       - name: Nothing to do
-        if: >
-          github.event_name != 'workflow_dispatch' &&
-          steps.get-schemas.outputs.ALL_SCHEMAS == ''
+        if: github.event_name != 'workflow_dispatch' && steps.get-schemas.outputs.ALL_SCHEMAS == ''
         run: echo "✔️ No schema files found in the repository. Skipping deployment."
