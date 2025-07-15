@@ -84,8 +84,7 @@ jobs:
             warehouse = "${SNOWFLAKE_WAREHOUSE}"
             database = "${SNOWFLAKE_DATABASE}"
             schema = "${schema}"
-            EOF
-
+          EOF
             schemachange \
               --root-folder snowflake/setup \
               --connection-name default \
@@ -136,7 +135,7 @@ jobs:
             warehouse = "${SNOWFLAKE_WAREHOUSE}"
             database = "${SNOWFLAKE_DATABASE}"
             schema = "${schema}"
-            EOF
+          EOF
 
             schemachange \
               --root-folder snowflake/migration \
