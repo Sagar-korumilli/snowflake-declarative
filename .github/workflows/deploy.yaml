@@ -69,27 +69,18 @@ jobs:
           echo "🚀 Running bootstrap for each schema using files in snowflake/setup/..."
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "⚙️ Processing initial setup for schema: $schema_name"
-            mkdir -p .schemachange
-            cat <<EOF > .schemachange/connections.toml
-              [connections]
-                  [connections.default]
-                  account = "${SNOWFLAKE_ACCOUNT}"
-                  user = "${SNOWFLAKE_USER}"
-                  password = "${SNOWFLAKE_PASSWORD}"
-                  role = "${SNOWFLAKE_ROLE}"
-                  warehouse = "${SNOWFLAKE_WAREHOUSE}"
-                  database = "${SNOWFLAKE_DATABASE}"
-                  schema = "${schema_name}"
-            EOF
-            chmod 0600 .schemachange/connections.toml
             schemachange deploy \
               --root-folder snowflake/setup \
-              --connection-name default \
-              --connections-file-path .schemachange/connections.toml \
+              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+              --snowflake-user "$SNOWFLAKE_USER" \
+              --snowflake-password "$SNOWFLAKE_PASSWORD" \
+              --snowflake-role "$SNOWFLAKE_ROLE" \
+              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+              --snowflake-database "$SNOWFLAKE_DATABASE" \
+              --snowflake-schema "$schema_name" \
               --change-history-table CHANGE_HISTORY \
               --create-change-history-table \
               -v
-            rm .schemachange/connections.toml
           done
 
       - name: Apply incremental migrations
@@ -107,26 +98,17 @@ jobs:
           echo "🔁 Applying incremental migrations for each schema using files in snowflake/migrations/..."
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "📄 Processing migrations for schema: $schema_name"
-            mkdir -p .schemachange
-            cat <<EOF > .schemachange/connections.toml
-              [connections]
-                [connections.default]
-                account = "${SNOWFLAKE_ACCOUNT}"
-                user = "${SNOWFLAKE_USER}"
-                password = "${SNOWFLAKE_PASSWORD}"
-                role = "${SNOWFLAKE_ROLE}"
-                warehouse = "${SNOWFLAKE_WAREHOUSE}"
-                database = "${SNOWFLAKE_DATABASE}"
-                schema = "${schema_name}"
-            EOF
-            chmod 0600 .schemachange/connections.toml
             schemachange deploy \
               --root-folder snowflake/migrations \
-              --connection-name default \
-              --connections-file-path .schemachange/connections.toml \
+              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+              --snowflake-user "$SNOWFLAKE_USER" \
+              --snowflake-password "$SNOWFLAKE_PASSWORD" \
+              --snowflake-role "$SNOWFLAKE_ROLE" \
+              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+              --snowflake-database "$SNOWFLAKE_DATABASE" \
+              --snowflake-schema "$schema_name" \
               --change-history-table CHANGE_HISTORY \
               -v
-            rm .schemachange/connections.toml
           done
 
       - name: Nothing to do
