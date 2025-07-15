@@ -13,9 +13,6 @@ CREATE WAREHOUSE IF NOT EXISTS sales_wh
 
 -- 3. Create role and grants
 CREATE ROLE IF NOT EXISTS sales_analyst;
-GRANT USAGE ON WAREHOUSE sales_wh TO ROLE sales_analyst;
-GRANT USAGE ON DATABASE TPCH TO ROLE sales_analyst;
-GRANT USAGE ON SCHEMA TPCH.sales TO ROLE sales_analyst;
 
 -- 4. Create tables
 CREATE OR REPLACE TABLE sales.orders (
@@ -57,15 +54,3 @@ CREATE OR REPLACE FILE FORMAT sales.csv_ff
   TYPE = ‘CSV’
   FIELD_DELIMITER = ‘,’
   SKIP_HEADER = 1;
-
-CREATE OR REPLACE STAGE sales.orders_stage
-  URL = 's3://my-bucket/sales/'
-  FILE_FORMAT = sales.csv_ff
-  CREDENTIALS = (AWS_KEY_ID='{{AWS_KEY}}' AWS_SECRET_KEY='{{AWS_SECRET}}');
-
--- 8. Grants on objects
-GRANT SELECT ON ALL TABLES IN SCHEMA sales TO ROLE sales_analyst;
-GRANT SELECT ON ALL VIEWS IN SCHEMA sales TO ROLE sales_analyst;
-GRANT USAGE ON SEQUENCE sales.order_seq TO ROLE sales_analyst;
-GRANT USAGE ON FILE FORMAT sales.csv_ff TO ROLE sales_analyst;
-GRANT USAGE ON STAGE sales.orders_stage TO ROLE sales_analyst;
