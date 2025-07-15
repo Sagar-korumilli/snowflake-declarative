@@ -104,7 +104,7 @@ jobs:
           echo "🔁 Applying incremental migrations for each schema using files in snowflake/migrations/..."
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "📄 Processing migrations for schema: $schema_name"
-            if [ -d "snowflake/migrations/$schema_name" ]; then
+            if [ -d "snowflake/migrations" ]; then
               schemachange  \
                 --root-folder snowflake/migrations \
                 --snowflake-account "$SNOWFLAKE_ACCOUNT" \
