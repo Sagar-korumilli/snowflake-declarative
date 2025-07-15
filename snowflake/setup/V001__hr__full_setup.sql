@@ -1,6 +1,6 @@
 -- V001__hr__full_setup.sql
 -- Full DDL for the HR schema
-
+-- testing 
 -- 1. Create schema
 CREATE SCHEMA IF NOT EXISTS hr;
 
