@@ -13,11 +13,7 @@ CREATE WAREHOUSE IF NOT EXISTS hr_wh
 -- 3. Role & grants
 CREATE ROLE IF NOT EXISTS hr_analyst;
 
--- Grant usage on the database being deployed to (populated by schemachange's --vars)
-GRANT USAGE ON WAREHOUSE hr_wh TO ROLE hr_analyst;
-GRANT USAGE ON DATABASE {{ SNOWFLAKE_DATABASE }} TO ROLE hr_analyst;
--- Grant usage on the specific HR schema within that database
-GRANT USAGE ON SCHEMA {{ SNOWFLAKE_DATABASE }}.hr TO ROLE hr_analyst;
+
 
 
 -- 4. Create tables
