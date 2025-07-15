@@ -51,48 +51,11 @@ jobs:
           echo "Discovered schemas in setup: $SETUP_SCHEMAS"
           MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
           echo "Discovered schemas in migrations: $MIGRATION_SCHEMAS"
-          
+
           # Combine and get unique schema names
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
           echo "Combined unique schemas for deployment: $ALL_SCHEMAS"
-
-      - name: Ensure Schemachange Metadata Schema Exists
-        # This step ensures the schema for schemachange's internal history table exists
-        # It's crucial to run this before any schemachange commands.
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: |
-          python -c "
-import snowflake.connector
-import os
-
-conn = snowflake.connector.connect(
-    user=os.environ['SNOWFLAKE_USER'],
-    password=os.environ['SNOWFLAKE_PASSWORD'],
-    account=os.environ['SNOWFLAKE_ACCOUNT'],
-    warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
-    database=os.environ['SNOWFLAKE_DATABASE'],
-    role=os.environ['SNOWFLAKE_ROLE'],
-    ocsp_fail_open=True # As per your existing workflow
-)
-
-try:
-    cursor = conn.cursor()
-    # Create a dedicated schema for schemachange's history table if it doesn't exist
-    schema_name = 'SCHEMACHANGE_METADATA'
-    db_name = os.environ['SNOWFLAKE_DATABASE']
-    print(f'Ensuring schema {db_name}.{schema_name} exists for schemachange history...')
-    cursor.execute(f'CREATE SCHEMA IF NOT EXISTS {db_name}.{schema_name}')
-    print(f'Schema {db_name}.{schema_name} is ready.')
-finally:
-    conn.close()
-"
 
       - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
         # This step runs the initial setup scripts for each discovered schema.
@@ -120,7 +83,7 @@ finally:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.SCHEMACHANGE_METADATA.CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.CHANGE_HISTORY" \
               --create-change-history-table \
               -v
           done
@@ -151,7 +114,7 @@ finally:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.SCHEMACHANGE_METADATA.CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.CHANGE_HISTORY" \
               -v
           done
 
