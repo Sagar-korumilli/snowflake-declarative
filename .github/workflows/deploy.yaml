@@ -1,5 +1,4 @@
-# .github/workflows/deploy-all-snowflake.yaml
-name: ❄️ Snowflake Full Deploy
+name: ❄️ Snowflake Deploy with Per-Schema History
 
 on:
   push:
@@ -13,25 +12,22 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # 1. Checkout full history so diffs work even on first-run
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. Python & dependencies
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install schemachange & connector
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install schemachange snowflake-connector-python
 
-      # 3. Validate Snowflake secrets
-      - name: Validate Snowflake env vars
+      - name: Validate Snowflake secrets
         env:
           SF_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SF_USER:      ${{ secrets.SNOWFLAKE_USER }}
@@ -46,39 +42,29 @@ jobs:
             fi
           done
 
-      # 4. Write connections.toml for schemachange
       - name: Write Schemachange connections.toml
-        env:
-          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE:      ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           cat > connections.toml <<EOF
 [connections.default]
-account   = "${SNOWFLAKE_ACCOUNT}"
-user      = "${SNOWFLAKE_USER}"
-password  = "${SNOWFLAKE_PASSWORD}"
-role      = "${SNOWFLAKE_ROLE}"
-warehouse = "${SNOWFLAKE_WAREHOUSE}"
-database  = "${SNOWFLAKE_DATABASE}"
-schema    = ""  # will be filled from filename
+account   = "${{ secrets.SNOWFLAKE_ACCOUNT }}"
+user      = "${{ secrets.SNOWFLAKE_USER }}"
+password  = "${{ secrets.SNOWFLAKE_PASSWORD }}"
+role      = "${{ secrets.SNOWFLAKE_ROLE }}"
+warehouse = "${{ secrets.SNOWFLAKE_WAREHOUSE }}"
+database  = "${{ secrets.SNOWFLAKE_DATABASE }}"
+schema    = ""
 
 [schemachange]
 connection = "default"
 EOF
 
-      # 5. Detect changes under setup/
-      - name: Detect setup/ changes
+      - name: Detect changes in setup/
         id: detect-setup
         run: |
           if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
             echo "run=true" >> $GITHUB_OUTPUT
           else
-            CHG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
-                  | grep -E '^snowflake/setup/.*\.sql' || true)
+            CHG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^snowflake/setup/.*\.sql' || true)
             if [ -n "$CHG" ]; then
               echo "run=true" >> $GITHUB_OUTPUT
             else
@@ -86,56 +72,63 @@ EOF
             fi
           fi
 
-      # 6. Bootstrap all schemas if any setup script changed (or manual dispatch)
-      - name: Bootstrap schemas
+      - name: Run setup scripts (bootstrap)
         if: github.event_name == 'workflow_dispatch' || steps.detect-setup.outputs.run == 'true'
-        env:
-          SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
-          echo "🚀 Running initial bootstrap for all schemas…"
-          schemachange \
-            --connection default \
-            --root-folder snowflake/setup \
-            --change-history-table BOOTSTRAP_HISTORY \
-            --create-change-history-table \
-            -v
-          echo "✅ Bootstrap complete."
+          echo "🚀 Running setup scripts for all schemas..."
+          for file in snowflake/setup/*.sql; do
+            [ -e "$file" ] || continue
+            fname=$(basename "$file")
+            schema=$(echo "$fname" | cut -d'_' -f3)  # e.g., hr from V001__hr__full_setup.sql
+            echo "⚙️  Bootstrapping schema: $schema (file: $fname)"
 
-      # 7. Detect changes under migration/
-      - name: Detect migration/ changes
+            schemachange \
+              --connection default \
+              --root-folder snowflake/setup \
+              --file-filter "$fname" \
+              --snowflake-schema "$schema" \
+              --change-history-table "CHANGE_HISTORY" \
+              --create-change-history-table \
+              -v
+          done
+
+      - name: Detect changes in migration/
         id: detect-migration
         run: |
           if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
             echo "run=true" >> $GITHUB_OUTPUT
           else
-            MIG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
-                  | grep -E '^snowflake/migration/.*\.sql' || true)
-            if [ -n "$MIG" ]; then
+            CHG=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^snowflake/migration/.*\.sql' || true)
+            if [ -n "$CHG" ]; then
               echo "run=true" >> $GITHUB_OUTPUT
             else
               echo "run=false" >> $GITHUB_OUTPUT
             fi
           fi
 
-      # 8. Apply incremental migrations if any changed
-      - name: Apply incremental migrations
+      - name: Run migration scripts
         if: steps.detect-migration.outputs.run == 'true'
-        env:
-          SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
-          echo "🔁 Applying incremental migrations for all schemas…"
-          schemachange \
-            --connection default \
-            --root-folder snowflake/migration \
-            --change-history-table CHANGE_HISTORY \
-            --create-change-history-table \
-            -v
-          echo "✅ Incremental migrations complete."
+          echo "🔁 Running migration scripts..."
+          for file in snowflake/migration/*.sql; do
+            [ -e "$file" ] || continue
+            fname=$(basename "$file")
+            schema=$(echo "$fname" | cut -d'_' -f3)  # e.g., hr from V001__hr__add_table.sql
+            echo "📦 Applying migrations for schema: $schema (file: $fname)"
 
-      # 9. Early exit if nothing to do
+            schemachange \
+              --connection default \
+              --root-folder snowflake/migration \
+              --file-filter "$fname" \
+              --snowflake-schema "$schema" \
+              --change-history-table "CHANGE_HISTORY" \
+              --create-change-history-table \
+              -v
+          done
+
       - name: Nothing to do
         if: >
           steps.detect-setup.outputs.run == 'false' &&
           steps.detect-migration.outputs.run == 'false' &&
           github.event_name != 'workflow_dispatch'
-        run: echo "✔️ No changes detected in setup/ or migration/; skipping."
+        run: echo "✔️ No setup or migration changes detected; skipping."
