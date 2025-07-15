@@ -12,13 +12,11 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # 1. Checkout full history so diff works even on first run
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. Set up Python and install schemachange
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -29,7 +27,6 @@ jobs:
           pip install --upgrade pip
           pip install schemachange snowflake-connector-python
 
-      # 3. Validate secrets
       - name: Validate Snowflake env vars
         env:
           SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -45,7 +42,6 @@ jobs:
             fi
           done
 
-      # 4. Detect changes under setup/
       - name: Detect setup/ changes
         id: detect-setup
         run: |
@@ -60,7 +56,6 @@ jobs:
             fi
           fi
 
-      # 5. Run setup scripts if needed
       - name: Bootstrap schemas
         if: github.event_name == 'workflow_dispatch' || steps.detect-setup.outputs.run == 'true'
         env:
@@ -76,7 +71,7 @@ jobs:
           echo "🚀 Running bootstrap for all setup scripts…"
           for file in snowflake/setup/*.sql; do
             [ -e "$file" ] || continue
-            schema=$(basename "$file" | cut -d'__' -f1)
+            schema=$(basename "$file" | awk -F '__' '{print $1}')
             echo "⚙️ Bootstrapping schema $schema with $file"
             schemachange \
               --root-folder snowflake/setup \
@@ -92,7 +87,6 @@ jobs:
               -f "$file" -v
           done
 
-      # 6. Detect changes under migration/
       - name: Detect migration/ changes
         id: detect-migration
         run: |
@@ -107,7 +101,6 @@ jobs:
             fi
           fi
 
-      # 7. Run incremental migration scripts
       - name: Apply incremental migrations
         if: steps.detect-migration.outputs.run == 'true'
         env:
@@ -123,7 +116,7 @@ jobs:
           echo "🔁 Applying incremental migrations…"
           for file in snowflake/migration/*.sql; do
             [ -e "$file" ] || continue
-            schema=$(basename "$file" | cut -d'__' -f1)
+            schema=$(basename "$file" | awk -F '__' '{print $1}')
             echo "📄 Applying $file to schema $schema"
             schemachange \
               --root-folder snowflake/migration \
@@ -139,7 +132,6 @@ jobs:
               -f "$file" -v
           done
 
-      # 8. Exit if nothing changed
       - name: Nothing to do
         if: >
           steps.detect-setup.outputs.run == 'false' &&
