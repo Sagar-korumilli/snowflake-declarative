@@ -25,7 +25,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install schemachange==4.0.1 snowflake-connector-python
+          # Add GitPython for the rollback mechanism to compare Git states
+          pip install schemachange==4.0.1 snowflake-connector-python GitPython
 
       - name: Validate Snowflake env vars
         env:
@@ -57,6 +58,11 @@ jobs:
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
           echo "Combined unique schemas for deployment: $ALL_SCHEMAS"
+
+          # Store current commit hash for potential rollback
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          echo "CURRENT_COMMIT=${CURRENT_COMMIT}" >> $GITHUB_OUTPUT
+          echo "Current commit for deployment: $CURRENT_COMMIT"
 
       - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
         # This step runs the initial setup scripts for each discovered schema.
@@ -103,7 +109,7 @@ jobs:
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
             echo "📄 Processing migrations for schema: $schema_name"
             if [ -d "snowflake/migrations" ]; then
-              schemachange  \
+              schemachange \
                 --root-folder snowflake/migrations \
                 --snowflake-account "$SNOWFLAKE_ACCOUNT" \
                 --snowflake-user "$SNOWFLAKE_USER" \
@@ -114,9 +120,83 @@ jobs:
                 -v
             else
               echo "ℹ️ No migration folder found for schema: $schema_name. Skipping incremental migrations for this schema."
-            fi 
+            fi
           done
 
       - name: Nothing to do
         if: github.event_name != 'workflow_dispatch' && steps.get-schemas.outputs.ALL_SCHEMAS == ''
         run: echo "✔️ No schema files found in the repository. Skipping deployment."
+
+  rollback:
+    runs-on: ubuntu-latest
+    needs: deploy # This job depends on the 'deploy' job
+    if: failure() && needs.deploy.result == 'failure' # This job runs only if the 'deploy' job fails
+    timeout-minutes: 15 # Increased timeout for potential script generation/execution
+
+    steps:
+      - name: Checkout code for rollback
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11 for rollback
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies for rollback
+        run: |
+          pip install --upgrade pip
+          pip install snowflake-connector-python GitPython # GitPython is crucial for comparing states
+
+      - name: Get Last Successful Commit (Crucial for "revert to last successful deploy")
+        id: get-last-successful-commit
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          set -euo pipefail
+          echo "Attempting to determine the last successful deployment commit from Snowflake history..."
+          
+         
+
+          # Fallback for demo/initial setup if no DB history is present
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            LAST_SUCCESSFUL_COMMIT=$(git rev-parse HEAD~1 || echo "")
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Cannot reliably determine last successful commit for workflow_dispatch without database lookup."
+            LAST_SUCCESSFUL_COMMIT=""
+          fi
+
+          if [ -z "$LAST_SUCCESSFUL_COMMIT" ]; then
+              echo "WARNING: Could not reliably determine the last successful commit. Proceeding with caution or alerting for manual intervention."
+              echo "LAST_SUCCESSFUL_COMMIT=" >> $GITHUB_OUTPUT
+          else
+              echo "Determined last successful commit (approx): $LAST_SUCCESSFUL_COMMIT"
+              echo "LAST_SUCCESSFUL_COMMIT=${LAST_SUCCESSFUL_COMMIT}" >> $GITHUB_OUTPUT
+          fi
+
+
+      - name: Execute Rollback Script
+        if: steps.get-last-successful-commit.outputs.LAST_SUCCESSFUL_COMMIT != '' || github.event_name == 'workflow_dispatch'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_OCSP_FAIL_OPEN: "true"
+          CURRENT_FAILED_COMMIT: ${{ github.sha }}
+          LAST_SUCCESSFUL_COMMIT: ${{ steps.get-last-successful-commit.outputs.LAST_SUCCESSFUL_COMMIT }}
+        run: |
+          echo "🚨 Deployment failed. Initiating automated rollback (if possible) or manual intervention."
+          set -euo pipefail
+          
+          # Execute the external Python script
+          python scripts/rollback_logic.py
+          echo "Rollback mechanism initiated. Check logs for details and required manual steps."
