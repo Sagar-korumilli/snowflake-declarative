@@ -1,18 +1,15 @@
 import os
 import re
 import sys
+import json
+import argparse
 import snowflake.connector
 from snowflake.connector.errors import ProgrammingError
 
 # --- Configuration ---
-
-# Folders containing SQL files to scan
 SQL_FOLDERS = ['snowflake/setup', 'snowflake/migrations']
-
-# Regex to extract schema name from the filename (e.g., V1__MYSCHEMA__description.sql)
 SCHEMA_FROM_FILENAME_RE = re.compile(r'__([a-zA-Z0-9_]+)__', re.IGNORECASE)
 
-# Patterns to identify statements that drop or alter objects.
 DESTRUCTIVE_PATTERNS = {
     'TABLE': [
         re.compile(r'\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE),
@@ -36,42 +33,40 @@ DESTRUCTIVE_PATTERNS = {
     'SEQUENCE': [
         re.compile(r'\bDROP\s+SEQUENCE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
     ],
-    # For DROP COLUMN, we check dependencies on the TABLE itself.
     'ALTER_TABLE_DROP_COLUMN': [
         re.compile(r'\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s]+)\s+DROP\s+COLUMN\s+([^\s;]+)', re.IGNORECASE)
     ]
 }
 
-# --- Helper Functions ---
-
 def parse_fully_qualified_name(name_str, default_db, default_schema):
-    """
-    Parses an object identifier string into its components, applying defaults.
-    """
     parts = name_str.upper().replace('"', '').split('.')
     if len(parts) == 3:
-        return (parts[0], parts[1], parts[2])  # DB, SCHEMA, NAME
+        return (parts[0], parts[1], parts[2])
     elif len(parts) == 2:
-        return (default_db, parts[0], parts[1]) # DB (default), SCHEMA, NAME
-    elif len(parts) == 1:
-        if not default_schema:
-            return (None, None, None) # Cannot determine schema
-        return (default_db, default_schema, parts[0]) # DB (default), SCHEMA (default), NAME
-    
-    return (None, None, None) # Invalid format
+        return (default_db, parts[0], parts[1])
+    elif len(parts) == 1 and default_schema:
+        return (default_db, default_schema, parts[0])
+    return (None, None, None)
 
-# --- Main Logic ---
-
-def main():
-    """Main execution function."""
-    target_db = os.environ.get('SNOWFLAKE_DATABASE')
-    if not target_db:
-        print("❌ Environment variable SNOWFLAKE_DATABASE is not set.")
+def validate_env_vars():
+    required = ['SNOWFLAKE_USER', 'SNOWFLAKE_PASSWORD', 'SNOWFLAKE_ACCOUNT',
+                'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE']
+    missing = [v for v in required if not os.environ.get(v)]
+    if missing:
+        print(f"❌ Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    print("Step 1: Parsing SQL files for destructive operations...")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dry-run', action='store_true', help="Only report dependencies, don't exit with error.")
+    args = parser.parse_args()
+
+    validate_env_vars()
+
+    target_db = os.environ['SNOWFLAKE_DATABASE']
     impacted_objects = {}
 
+    print("🔍 Step 1: Scanning SQL files...")
     for folder in SQL_FOLDERS:
         if not os.path.isdir(folder):
             continue
@@ -89,31 +84,22 @@ def main():
             for domain, regex_list in DESTRUCTIVE_PATTERNS.items():
                 for regex in regex_list:
                     for match in regex.finditer(sql_content):
-                        if domain == 'ALTER_TABLE_DROP_COLUMN':
-                            object_domain = 'TABLE'
-                            unparsed_name = match.group(1)
-                        else:
-                            object_domain = domain
-                            unparsed_name = match.group(1)
+                        object_domain = 'TABLE' if domain == 'ALTER_TABLE_DROP_COLUMN' else domain
+                        unparsed_name = match.group(1)
 
                         db, schema, name = parse_fully_qualified_name(unparsed_name, target_db.upper(), default_schema)
-
                         if not all([db, schema, name]):
-                            print(f"❌ Could not fully qualify object name '{unparsed_name}' from file '{fname}'.")
-                            print("    Ensure the object name is fully qualified or the file has a schema in its name (e.g., __MYSCHEMA__).")
+                            print(f"❌ Could not parse object: {unparsed_name} in file {fname}")
                             sys.exit(1)
 
                         key = (object_domain, db, schema, name)
-                        if key not in impacted_objects:
-                            impacted_objects[key] = []
-                        impacted_objects[key].append(fname)
+                        impacted_objects.setdefault(key, []).append(fname)
 
     if not impacted_objects:
-        print("\n✅ No destructive operations found. Skipping dependency check.")
-        sys.exit(0)
+        print("✅ No destructive operations found.")
+        return
 
-    print(f"\nFound {len(impacted_objects)} potentially destructive operation(s).")
-    print("Step 2: Checking for downstream dependencies using ACCOUNT_USAGE (real-time)...")
+    print(f"\n🔍 Step 2: Checking downstream dependencies for {len(impacted_objects)} object(s)...")
 
     try:
         ctx = snowflake.connector.connect(
@@ -122,19 +108,17 @@ def main():
             account=os.environ['SNOWFLAKE_ACCOUNT'],
             warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
             role=os.environ['SNOWFLAKE_ROLE'],
-            database=target_db # Connect to target_db, but query ACCOUNT_USAGE
+            database=target_db
         )
         cur = ctx.cursor()
     except Exception as e:
-        print(f"❌ Failed to connect to Snowflake: {e}")
+        print(f"❌ Connection failed: {e}")
         sys.exit(1)
 
     blocking_dependencies = []
 
     for (domain, db, schema, name), files in impacted_objects.items():
-        print(f"Checking: {domain} {db}.{schema}.{name} (from {', '.join(files)})")
-        
-        # Corrected query to use SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES view
+        print(f"🔗 Checking: {domain} {db}.{schema}.{name} (from {', '.join(files)})")
         query = f"""
             SELECT
                 REFERENCING_DATABASE,
@@ -148,58 +132,47 @@ def main():
               AND REFERENCED_OBJECT_DOMAIN = '{domain}'
               AND REFERENCING_OBJECT_ID != REFERENCED_OBJECT_ID
         """
-
         try:
             cur.execute(query)
-            
-            for dep_db, dep_schema, dep_name, dep_domain in cur.fetchall():
+            for row in cur.fetchall():
                 blocking_dependencies.append({
                     "dropped_domain": domain,
                     "dropped_name": f"{db}.{schema}.{name}",
-                    "dependent_domain": dep_domain,
-                    "dependent_name": f"{dep_db}.{dep_schema}.{dep_name}"
+                    "dependent_domain": row[3],
+                    "dependent_name": f"{row[0]}.{row[1]}.{row[2]}"
                 })
         except ProgrammingError as e:
-            # Handle cases where the object might not exist yet in the database
-            if "does not exist or not authorized" in str(e) or "Object does not exist" in str(e):
-                print(f"    -> Info: Object {db}.{schema}.{name} does not exist in the live database. No dependencies to check for it.")
+            if "does not exist" in str(e):
+                print(f"ℹ️ Object {db}.{schema}.{name} does not exist. Skipping.")
                 continue
-            
-            print(f"\n❌ A database error occurred: {e}")
-            print(f"    Please ensure the role has MONITOR USAGE privilege on the account to access SNOWFLAKE.ACCOUNT_USAGE.")
-            cur.close()
-            ctx.close()
+            print(f"❌ Query failed: {e}")
             sys.exit(1)
-
-    # Create a set of fully-qualified names for all objects being dropped for easy lookup.
-    # e.g., {'TABLE.PROD.PUBLIC.MY_TABLE', 'VIEW.PROD.PUBLIC.MY_VIEW'}
-    dropped_object_keys = {
-        f"{domain}.{db}.{schema}.{name}" for (domain, db, schema, name) in impacted_objects.keys()
-    }
-
-    # Filter out dependencies that are also being dropped in this same run.
-    truly_blocking_dependencies = []
-    for dep in blocking_dependencies:
-        # Construct the key for the dependent object to check against the drop list.
-        # Ensure consistent casing for comparison
-        dependent_key = f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}"
-        
-        if dependent_key not in dropped_object_keys:
-            truly_blocking_dependencies.append(dep)
 
     cur.close()
     ctx.close()
 
-    if truly_blocking_dependencies:
-        print("\n========================= ❌ DANGER ❌ =========================")
-        print("Execution stopped. Found blocking downstream dependencies:")
-        for dep in truly_blocking_dependencies:
-            print(f" • Object '{dep['dependent_name']}' ({dep['dependent_domain']}) depends on '{dep['dropped_name']}' which is being dropped or modified.")
-        print("=================================================================")
-        sys.exit(1)
+    dropped_keys = {f"{domain}.{db}.{schema}.{name}" for (domain, db, schema, name) in impacted_objects}
+    truly_blocking = []
+    for dep in blocking_dependencies:
+        dep_key = f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}"
+        if dep_key not in dropped_keys:
+            truly_blocking.append(dep)
 
-    print("\n✅ Success! No blocking dependencies found. It is safe to proceed.")
-    sys.exit(0)
+    # Save report
+    with open("blocking_dependencies.json", "w") as f:
+        json.dump(truly_blocking, f, indent=2)
+
+    if truly_blocking:
+        print("\n❌ Blocking dependencies found:")
+        for dep in truly_blocking:
+            print(f" • {dep['dependent_name']} ({dep['dependent_domain']}) depends on {dep['dropped_name']}")
+        if not args.dry_run:
+            print("🚫 Exiting due to dependency violations.")
+            sys.exit(1)
+        else:
+            print("⚠️ Dry run mode active — not exiting with error.")
+    else:
+        print("✅ No blocking dependencies. Safe to proceed.")
 
 if __name__ == "__main__":
     main()
