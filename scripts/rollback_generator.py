@@ -1,7 +1,8 @@
-import os, re
+import os
+import re
 
 FOLDERS = ['snowflake/setup', 'snowflake/migrations']
-ROLLBACK_FOLDER = 'rollback'
+ROLLBACK_FOLDER = 'snowflake/rollback'
 os.makedirs(ROLLBACK_FOLDER, exist_ok=True)
 
 def generate_rollback(file_path, folder_type):
@@ -15,23 +16,22 @@ def generate_rollback(file_path, folder_type):
     for table, column in adds:
         rollback_lines.append(f'ALTER TABLE {table} DROP COLUMN {column};')
 
-    # CREATE OR REPLACE objects
-    if re.search(r'CREATE OR REPLACE', sql, re.IGNORECASE):
-        m = re.search(r'CREATE OR REPLACE (TABLE|VIEW|FUNCTION|PROCEDURE) (\S+)', sql, re.IGNORECASE)
-        if m:
-            obj_type, obj_name = m.groups()
-            rollback_lines.append(f'DROP {obj_type.upper()} {obj_name};')
+    # CREATE OR REPLACE objects (handle multiple in one file)
+    matches = re.findall(r'CREATE OR REPLACE (TABLE|VIEW|FUNCTION|PROCEDURE|SEQUENCE|STAGE|FILE FORMAT) (\S+)', sql, re.IGNORECASE)
+    for obj_type, obj_name in matches:
+        rollback_lines.append(f'DROP {obj_type.upper()} {obj_name};')
 
-    # For setup folder you might also want to DROP entire schema if it's a full-setup
+    # Full schema drop if setup/full_setup.sql
     if folder_type == 'setup' and filename.lower().endswith('full_setup.sql'):
-        # Assuming your file name format V###__schema__full_setup.sql
-        schema = filename.split('__')[1]
-        rollback_lines.append(f'DROP SCHEMA IF EXISTS {schema};')
+        parts = filename.split('__')
+        if len(parts) >= 2:
+            schema = parts[1]
+            rollback_lines.append(f'DROP SCHEMA IF EXISTS {schema};')
 
     if rollback_lines:
         out = os.path.join(ROLLBACK_FOLDER, f"rollback_{folder_type}_{filename}")
         with open(out, 'w') as f:
-            f.write('\n'.join(rollback_lines))
+            f.write('\n'.join(rollback_lines) + '\n')
         print(f"✅ Generated {folder_type} rollback for {filename}")
     else:
         print(f"⚠️ No rollback logic for {folder_type}/{filename}")
