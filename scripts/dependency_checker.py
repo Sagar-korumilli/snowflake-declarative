@@ -100,7 +100,7 @@ def main():
 
                         if not all([db, schema, name]):
                             print(f"❌ Could not fully qualify object name '{unparsed_name}' from file '{fname}'.")
-                            print("   Ensure the object name is fully qualified or the file has a schema in its name (e.g., __MYSCHEMA__).")
+                            print("    Ensure the object name is fully qualified or the file has a schema in its name (e.g., __MYSCHEMA__).")
                             sys.exit(1)
 
                         key = (object_domain, db, schema, name)
@@ -113,7 +113,7 @@ def main():
         sys.exit(0)
 
     print(f"\nFound {len(impacted_objects)} potentially destructive operation(s).")
-    print("Step 2: Checking for downstream dependencies using INFORMATION_SCHEMA (real-time)...")
+    print("Step 2: Checking for downstream dependencies using ACCOUNT_USAGE (real-time)...")
 
     try:
         ctx = snowflake.connector.connect(
@@ -122,7 +122,7 @@ def main():
             account=os.environ['SNOWFLAKE_ACCOUNT'],
             warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
             role=os.environ['SNOWFLAKE_ROLE'],
-            database=target_db
+            database=target_db # Connect to target_db, but query ACCOUNT_USAGE
         )
         cur = ctx.cursor()
     except Exception as e:
@@ -134,17 +134,19 @@ def main():
     for (domain, db, schema, name), files in impacted_objects.items():
         print(f"Checking: {domain} {db}.{schema}.{name} (from {', '.join(files)})")
         
+        # Corrected query to use SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES view
         query = f"""
             SELECT
                 REFERENCING_DATABASE,
                 REFERENCING_SCHEMA,
                 REFERENCING_OBJECT_NAME,
                 REFERENCING_OBJECT_DOMAIN
-            FROM TABLE({target_db}.INFORMATION_SCHEMA.OBJECT_DEPENDENCIES(
-                    OBJECT_DOMAIN => '{domain}',
-                    OBJECT_NAME => '{db}.{schema}.{name}'
-            ))
-            WHERE REFERENCING_OBJECT_ID != REFERENCED_OBJECT_ID
+            FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
+            WHERE REFERENCED_DATABASE = '{db}'
+              AND REFERENCED_SCHEMA = '{schema}'
+              AND REFERENCED_OBJECT_NAME = '{name}'
+              AND REFERENCED_OBJECT_DOMAIN = '{domain}'
+              AND REFERENCING_OBJECT_ID != REFERENCED_OBJECT_ID
         """
 
         try:
@@ -158,12 +160,13 @@ def main():
                     "dependent_name": f"{dep_db}.{dep_schema}.{dep_name}"
                 })
         except ProgrammingError as e:
-            if "does not exist or not authorized" in str(e):
-                print(f"   -> Info: Object {db}.{schema}.{name} does not exist. No dependencies to check.")
+            # Handle cases where the object might not exist yet in the database
+            if "does not exist or not authorized" in str(e) or "Object does not exist" in str(e):
+                print(f"    -> Info: Object {db}.{schema}.{name} does not exist in the live database. No dependencies to check for it.")
                 continue
             
             print(f"\n❌ A database error occurred: {e}")
-            print(f"   Please ensure the role has USAGE privilege on database '{target_db}'.")
+            print(f"    Please ensure the role has MONITOR USAGE privilege on the account to access SNOWFLAKE.ACCOUNT_USAGE.")
             cur.close()
             ctx.close()
             sys.exit(1)
@@ -178,6 +181,7 @@ def main():
     truly_blocking_dependencies = []
     for dep in blocking_dependencies:
         # Construct the key for the dependent object to check against the drop list.
+        # Ensure consistent casing for comparison
         dependent_key = f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}"
         
         if dependent_key not in dropped_object_keys:
