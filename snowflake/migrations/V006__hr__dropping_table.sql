@@ -1,0 +1,1 @@
+DROP TABLE hr.salaries;
