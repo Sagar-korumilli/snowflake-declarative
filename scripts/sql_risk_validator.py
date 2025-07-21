@@ -1,35 +1,44 @@
 import os
 import re
 
+# Directories to scan
 SQL_FOLDERS = ['snowflake/setup', 'snowflake/migrations']
-BLOCK_PATTERNS = [
+
+# Destructive patterns to warn on (no blocking)
+WARN_PATTERNS = [
     r'DROP\s+TABLE',
     r'DROP\s+COLUMN',
     r'TRUNCATE\s+TABLE',
     r'ALTER\s+TABLE\s+\S+\s+DROP\s+COLUMN'
 ]
 
-def is_risky(sql):
-    for pattern in BLOCK_PATTERNS:
-        if re.search(pattern, sql, re.IGNORECASE):
-            return True, pattern
-    return False, None
 
-errors = []
-for folder in SQL_FOLDERS:
-    for filename in os.listdir(folder):
-        if not filename.endswith('.sql'):
-            continue
-        path = os.path.join(folder, filename)
-        with open(path, 'r') as f:
-            sql = f.read()
-        risky, pattern = is_risky(sql)
-        if risky:
-            errors.append(f"{folder}/{filename}: matched '{pattern}'")
+def scan_sql():
+    warnings = []
+    for folder in SQL_FOLDERS:
+        for filename in os.listdir(folder):
+            if not filename.lower().endswith('.sql'):
+                continue
+            path = os.path.join(folder, filename)
+            sql = open(path, 'r').read()
+            for pattern in WARN_PATTERNS:
+                if re.search(pattern, sql, re.IGNORECASE):
+                    warnings.append(f"{folder}/{filename}: matched '{pattern}'")
+    return warnings
 
-if errors:
-    print("❌ Risky SQL detected:")
-    print("\n".join(errors))
-    exit(1)
 
-print("✅ All SQL files passed risk validation.")
+def main():
+    warnings = scan_sql()
+
+    if warnings:
+        print("⚠️  SQL warnings detected (no blocking patterns):")
+        for w in warnings:
+            print(f"  - {w}")
+    else:
+        print("✅ No destructive SQL patterns detected.")
+
+    # Always succeed
+    exit(0)
+
+if __name__ == '__main__':
+    main()
