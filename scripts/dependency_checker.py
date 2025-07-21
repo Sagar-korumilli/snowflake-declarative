@@ -1,7 +1,7 @@
 import os
 import snowflake.connector
 
-# Connect (database+schema don’t matter since we query ACCOUNT_USAGE)
+# Connect (database + schema on connect doesn’t matter for ACCOUNT_USAGE queries)
 ctx = snowflake.connector.connect(
     user=os.environ['SNOWFLAKE_USER'],
     password=os.environ['SNOWFLAKE_PASSWORD'],
@@ -14,25 +14,23 @@ def check_dependencies(database, schema):
     print(f"🔎 Checking dependencies on {database}.{schema}")
     cur = ctx.cursor()
     try:
+        # Use correct column names
         cur.execute(f"""
-            SELECT 
-                referencing_database_name,
-                referencing_schema_name,
-                referencing_object_name,
-                referencing_object_type,
-                referenced_object_name,
-                referenced_object_type
+            SELECT
+                REFERENCING_DATABASE,
+                REFERENCING_SCHEMA,
+                REFERENCING_OBJECT_NAME,
+                REFERENCING_OBJECT_DOMAIN,
+                REFERENCED_OBJECT_NAME,
+                REFERENCED_OBJECT_DOMAIN
             FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
-            WHERE referenced_database_name = %s
-              AND referenced_schema_name   = %s
-              AND referenced_object_type IN ('TABLE','VIEW')
-              -- you can also filter on referenced_object_name if desired
-            """,
-            (database, schema)
-        )
+            WHERE REFERENCED_DATABASE = %s
+              AND REFERENCED_SCHEMA   = %s
+              AND REFERENCED_OBJECT_DOMAIN IN ('TABLE','VIEW')
+        """, (database, schema))
         rows = cur.fetchall()
         if rows:
-            print("❌ Detected existing dependencies:")
+            print("❌ Detected blocking dependencies:")
             for r in rows:
                 print(f"  · {r[2]} ({r[3]}) in {r[0]}.{r[1]} depends on {r[4]} ({r[5]})")
             raise RuntimeError("Please resolve these before proceeding.")
@@ -41,7 +39,7 @@ def check_dependencies(database, schema):
     finally:
         cur.close()
 
-# Discover schemas from filenames
+# Discover schemas from your SQL filenames
 schemas = set()
 for folder in ['snowflake/setup', 'snowflake/migrations']:
     for fname in os.listdir(folder):
@@ -49,11 +47,10 @@ for folder in ['snowflake/setup', 'snowflake/migrations']:
             continue
         parts = fname.split('__')
         if len(parts) >= 3:
-            schemas.add(parts[1])
+            schemas.add(parts[1].upper())
 
-# Run check for each schema in your target database
 target_db = os.environ['SNOWFLAKE_DATABASE']
 for schema in schemas:
-    check_dependencies(target_db, schema.upper())
+    check_dependencies(target_db, schema)
 
 ctx.close()
