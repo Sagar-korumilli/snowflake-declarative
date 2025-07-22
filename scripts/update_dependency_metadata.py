@@ -3,19 +3,19 @@ import os
 import snowflake.connector
 from datetime import datetime, timezone
 
-# ── 1) Mirror exactly the columns in ACCOUNT_USAGE.OBJECT_DEPENDENCIES ───────
-COLUMNS = [
-    "REFERENCED_DATABASE",
-    "REFERENCED_SCHEMA",
-    "REFERENCED_OBJECT_NAME",
-    "REFERENCED_OBJECT_ID",
-    "REFERENCED_OBJECT_DOMAIN",
-    "REFERENCING_DATABASE",
-    "REFERENCING_SCHEMA",
-    "REFERENCING_OBJECT_NAME",
-    "REFERENCING_OBJECT_ID",
-    "REFERENCING_OBJECT_DOMAIN",
-    "DEPENDENCY_TYPE"               # <-- corrected
+# ── 1) Mirror exactly the columns (with types) from ACCOUNT_USAGE.OBJECT_DEPENDENCIES ──
+COLUMNS_DDL = [
+    ("REFERENCED_DATABASE",       "VARCHAR(16777216)"),
+    ("REFERENCED_SCHEMA",         "VARCHAR(16777216)"),
+    ("REFERENCED_OBJECT_NAME",    "VARCHAR(16777216)"),
+    ("REFERENCED_OBJECT_ID",      "NUMBER(38,0)"),
+    ("REFERENCED_OBJECT_DOMAIN",  "VARCHAR(16777216)"),
+    ("REFERENCING_DATABASE",      "VARCHAR(16777216)"),
+    ("REFERENCING_SCHEMA",        "VARCHAR(16777216)"),
+    ("REFERENCING_OBJECT_NAME",   "VARCHAR(16777216)"),
+    ("REFERENCING_OBJECT_ID",     "NUMBER(38,0)"),
+    ("REFERENCING_OBJECT_DOMAIN", "VARCHAR(16777216)"),
+    ("DEPENDENCY_TYPE",           "VARCHAR(16777216)")
 ]
 
 # ── 2) Your local table to store them ────────────────────────────────────────
@@ -33,8 +33,8 @@ def get_conn():
     )
 
 def ensure_table(cur):
-    # Use VARCHAR for everything; you can tighten types later if you like
-    cols = [f"{col} VARCHAR" for col in COLUMNS]
+    # Build the CREATE TABLE DDL using exact types
+    cols = [f"{name} {typ}" for name, typ in COLUMNS_DDL]
     cols.append("LOADED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()")
     ddl = (
         f"CREATE TABLE IF NOT EXISTS {METADATA_TABLE} (\n  "
@@ -49,9 +49,10 @@ def get_last_loaded(cur):
     return last or datetime(1970,1,1,tzinfo=timezone.utc)
 
 def fetch_incremental(cur, since_ts):
-    # Filter on CREATED (which does exist) rather than a non‑existent column
+    # Pull all 11 columns (in the same order)
+    col_list = ", ".join(name for name, _ in COLUMNS_DDL)
     sql = f"""
-      SELECT {', '.join(COLUMNS)}
+      SELECT {col_list}
         FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
        WHERE CREATED > %s
     """
@@ -60,15 +61,16 @@ def fetch_incremental(cur, since_ts):
 
 def load_rows(cur, rows):
     if not rows:
-        print("✔ No new dependencies.")
+        print("✔ No new dependency rows to load.")
         return
-    placeholders = ", ".join(["%s"] * len(COLUMNS))
+    col_names = ", ".join(name for name, _ in COLUMNS_DDL)
+    placeholders = ", ".join(["%s"] * len(COLUMNS_DDL))
     ins = (
-        f"INSERT INTO {METADATA_TABLE} ({', '.join(COLUMNS)}) "
+        f"INSERT INTO {METADATA_TABLE} ({col_names}) "
         f"VALUES ({placeholders})"
     )
     cur.executemany(ins, rows)
-    print(f"✔ Inserted {cur.rowcount} rows.")
+    print(f"✔ Inserted {cur.rowcount} new rows.")
 
 def main():
     # Validate required env vars
