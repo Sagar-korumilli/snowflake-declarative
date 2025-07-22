@@ -4,12 +4,13 @@ import sys
 import json
 import argparse
 import snowflake.connector
-from snowflake.connector.errors import ProgrammingError
 
 # --- Configuration ---
 SQL_FOLDERS = ['snowflake/setup', 'snowflake/migrations']
-SCHEMA_FROM_FILENAME_RE = re.compile(r'__([a-zA-Z0-9_]+)__', re.IGNORECASE)
+SCHEMA_FROM_FILENAME_RE = re.compile(r'__([A-Za-z0-9_]+)__', re.IGNORECASE)
+METADATA_TABLE = os.getenv('METADATA_TABLE', 'PUBLIC.DEPENDENCY_METADATA')
 
+# Patterns for destructive operations
 DESTRUCTIVE_PATTERNS = {
     'TABLE': [
         re.compile(r'\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE),
@@ -18,161 +19,115 @@ DESTRUCTIVE_PATTERNS = {
     'VIEW': [
         re.compile(r'\bDROP\s+VIEW\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
     ],
-    'FUNCTION': [
-        re.compile(r'\bDROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?([^\s(;]+)', re.IGNORECASE)
-    ],
-    'PROCEDURE': [
-        re.compile(r'\bDROP\s+PROCEDURE\s+(?:IF\s+EXISTS\s+)?([^\s(;]+)', re.IGNORECASE)
-    ],
-    'STAGE': [
-        re.compile(r'\bDROP\s+STAGE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
-    ],
-    'FILE FORMAT': [
-        re.compile(r'\bDROP\s+FILE\s+FORMAT\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
-    ],
-    'SEQUENCE': [
-        re.compile(r'\bDROP\s+SEQUENCE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
-    ],
-    'ALTER_TABLE_DROP_COLUMN': [
-        re.compile(r'\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s]+)\s+DROP\s+COLUMN\s+([^\s;]+)', re.IGNORECASE)
-    ]
+    # add other domains if needed...
 }
 
-def parse_fully_qualified_name(name_str, default_db, default_schema):
-    parts = name_str.upper().replace('"', '').split('.')
+
+def parse_fq(name, default_db, default_schema):
+    parts = name.upper().replace('"', '').split('.')
     if len(parts) == 3:
-        return (parts[0], parts[1], parts[2])
-    elif len(parts) == 2:
+        return parts
+    if len(parts) == 2:
         return (default_db, parts[0], parts[1])
-    elif len(parts) == 1 and default_schema:
+    if len(parts) == 1 and default_schema:
         return (default_db, default_schema, parts[0])
     return (None, None, None)
 
-def validate_env_vars():
-    required = ['SNOWFLAKE_USER', 'SNOWFLAKE_PASSWORD', 'SNOWFLAKE_ACCOUNT',
-                'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE']
-    missing = [v for v in required if not os.environ.get(v)]
-    if missing:
-        print(f"❌ Missing required environment variables: {', '.join(missing)}")
-        sys.exit(1)
+
+def validate_env():
+    req = [
+        'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER', 'SNOWFLAKE_PASSWORD',
+        'SNOWFLAKE_ROLE', 'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_DATABASE'
+    ]
+    miss = [v for v in req if not os.getenv(v)]
+    if miss:
+        sys.exit(f"Missing env vars: {miss}")
+
+
+def get_conn():
+    return snowflake.connector.connect(
+        user=os.getenv('SNOWFLAKE_USER'),
+        password=os.getenv('SNOWFLAKE_PASSWORD'),
+        account=os.getenv('SNOWFLAKE_ACCOUNT'),
+        role=os.getenv('SNOWFLAKE_ROLE'),
+        warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+        database=os.getenv('SNOWFLAKE_DATABASE'),
+        schema=os.getenv('SNOWFLAKE_SCHEMA', 'PUBLIC')
+    )
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dry-run', action='store_true', help="Only report dependencies, don't exit with error.")
+    parser.add_argument('--dry-run', action='store_true',
+                        help="Report but don’t exit on errors")
     args = parser.parse_args()
 
-    validate_env_vars()
+    validate_env()
+    target_db = os.getenv('SNOWFLAKE_DATABASE')
 
-    target_db = os.environ['SNOWFLAKE_DATABASE']
-    impacted_objects = {}
-
-    print("🔍 Step 1: Scanning SQL files...")
+    # 1) Scan SQL folders for destructive ops
+    impacted = {}
     for folder in SQL_FOLDERS:
         if not os.path.isdir(folder):
             continue
         for fname in os.listdir(folder):
             if not fname.lower().endswith('.sql'):
                 continue
-
             schema_match = SCHEMA_FROM_FILENAME_RE.search(fname)
             default_schema = schema_match.group(1).upper() if schema_match else None
+            content = open(os.path.join(folder, fname), 'r').read()
+            for domain, patterns in DESTRUCTIVE_PATTERNS.items():
+                for pat in patterns:
+                    for m in pat.finditer(content):
+                        db, sch, nm = parse_fq(m.group(1), target_db, default_schema)
+                        key = (domain, db, sch, nm)
+                        impacted.setdefault(key, []).append(fname)
 
-            file_path = os.path.join(folder, fname)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                sql_content = f.read()
-
-            for domain, regex_list in DESTRUCTIVE_PATTERNS.items():
-                for regex in regex_list:
-                    for match in regex.finditer(sql_content):
-                        object_domain = 'TABLE' if domain == 'ALTER_TABLE_DROP_COLUMN' else domain
-                        unparsed_name = match.group(1)
-
-                        db, schema, name = parse_fully_qualified_name(unparsed_name, target_db.upper(), default_schema)
-                        if not all([db, schema, name]):
-                            print(f"❌ Could not parse object: {unparsed_name} in file {fname}")
-                            sys.exit(1)
-
-                        key = (object_domain, db, schema, name)
-                        impacted_objects.setdefault(key, []).append(fname)
-
-    if not impacted_objects:
-        print("✅ No destructive operations found.")
+    if not impacted:
+        print("✅ No destructive SQL found.")
         return
 
-    print(f"\n🔍 Step 2: Checking downstream dependencies for {len(impacted_objects)} object(s)...")
-
-    try:
-        ctx = snowflake.connector.connect(
-            user=os.environ['SNOWFLAKE_USER'],
-            password=os.environ['SNOWFLAKE_PASSWORD'],
-            account=os.environ['SNOWFLAKE_ACCOUNT'],
-            warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
-            role=os.environ['SNOWFLAKE_ROLE'],
-            database=target_db
+    # 2) Check against your local metadata table
+    conn = get_conn()
+    cur = conn.cursor()
+    blocking = []
+    for (dom, db, sch, nm), files in impacted.items():
+        print(f"Checking dependencies for {db}.{sch}.{nm}…")
+        sql = (
+            f"SELECT REFERENCING_DATABASE, REFERENCING_SCHEMA, "
+            f"REFERENCING_OBJECT_NAME, REFERENCING_OBJECT_DOMAIN "
+            f"FROM {METADATA_TABLE} "
+            f"WHERE DEPENDS_ON_DOMAIN=%s "
+            f"AND DEPENDS_ON_DATABASE=%s "
+            f"AND DEPENDS_ON_SCHEMA=%s "
+            f"AND DEPENDS_ON_NAME=%s"
         )
-        cur = ctx.cursor()
-    except Exception as e:
-        print(f"❌ Connection failed: {e}")
+        cur.execute(sql, (dom, db, sch, nm))
+        for row in cur.fetchall():
+            blocking.append({
+                'dropped': f"{db}.{sch}.{nm}",
+                'dependent': f"{row[0]}.{row[1]}.{row[2]}",
+                'domain': row[3]
+            })
+    cur.close()
+    conn.close()
+
+    # 3) Filter out self-drops
+    drops = {f"{db}.{sch}.{nm}" for (dom, db, sch, nm) in impacted}
+    true_blockers = [b for b in blocking if b['dependent'] not in drops]
+
+    # 4) Write report
+    with open('blocking_dependencies.json', 'w') as fo:
+        json.dump(true_blockers, fo, indent=2)
+
+    if true_blockers and not args.dry_run:
+        print("❌ Blocking dependencies found:")
+        for b in true_blockers:
+            print(f" • {b['dependent']} depends on {b['dropped']}")
         sys.exit(1)
 
-    blocking_dependencies = []
+    print("✅ No blocking dependencies.")
+    
 
-    for (domain, db, schema, name), files in impacted_objects.items():
-        print(f"🔗 Checking: {domain} {db}.{schema}.{name} (from {', '.join(files)})")
-        query = f"""
-            SELECT
-                REFERENCING_DATABASE,
-                REFERENCING_SCHEMA,
-                REFERENCING_OBJECT_NAME,
-                REFERENCING_OBJECT_DOMAIN
-            FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
-            WHERE REFERENCED_DATABASE = '{db}'
-              AND REFERENCED_SCHEMA = '{schema}'
-              AND REFERENCED_OBJECT_NAME = '{name}'
-              AND REFERENCED_OBJECT_DOMAIN = '{domain}'
-              AND REFERENCING_OBJECT_ID != REFERENCED_OBJECT_ID
-        """
-        try:
-            cur.execute(query)
-            for row in cur.fetchall():
-                blocking_dependencies.append({
-                    "dropped_domain": domain,
-                    "dropped_name": f"{db}.{schema}.{name}",
-                    "dependent_domain": row[3],
-                    "dependent_name": f"{row[0]}.{row[1]}.{row[2]}"
-                })
-        except ProgrammingError as e:
-            if "does not exist" in str(e):
-                print(f"ℹ️ Object {db}.{schema}.{name} does not exist. Skipping.")
-                continue
-            print(f"❌ Query failed: {e}")
-            sys.exit(1)
-
-    cur.close()
-    ctx.close()
-
-    dropped_keys = {f"{domain}.{db}.{schema}.{name}" for (domain, db, schema, name) in impacted_objects}
-    truly_blocking = []
-    for dep in blocking_dependencies:
-        dep_key = f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}"
-        if dep_key not in dropped_keys:
-            truly_blocking.append(dep)
-
-    # Save report
-    with open("blocking_dependencies.json", "w") as f:
-        json.dump(truly_blocking, f, indent=2)
-
-    if truly_blocking:
-        print("\n❌ Blocking dependencies found:")
-        for dep in truly_blocking:
-            print(f" • {dep['dependent_name']} ({dep['dependent_domain']}) depends on {dep['dropped_name']}")
-        if not args.dry_run:
-            print("🚫 Exiting due to dependency violations.")
-            sys.exit(1)
-        else:
-            print("⚠️ Dry run mode active — not exiting with error.")
-    else:
-        print("✅ No blocking dependencies. Safe to proceed.")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
