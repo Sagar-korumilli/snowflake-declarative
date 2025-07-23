@@ -1,88 +1,93 @@
-#!/usr/bin/env python3
 import os
 import re
-import argparse
+import subprocess
 from datetime import datetime
 import snowflake.connector
+from pathlib import Path
+from git import Repo
 
-# Patterns to detect table operations
-OPERATIONS = [
-    r"ALTER\s+TABLE\s+(\S+)",
-    r"TRUNCATE\s+TABLE\s+(\S+)",
-    r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\S+)",
-]
+# ------------------ ENV VARS ------------------ #
+account = os.environ["SNOWFLAKE_ACCOUNT"]
+user = os.environ["SNOWFLAKE_USER"]
+password = os.environ["SNOWFLAKE_PASSWORD"]
+role = os.environ["SNOWFLAKE_ROLE"]
+warehouse = os.environ["SNOWFLAKE_WAREHOUSE"]
+database = os.environ["SNOWFLAKE_DATABASE"]
 
-# Pull creds from your existing env vars
-SF_ACCOUNT   = os.environ['SNOWFLAKE_ACCOUNT']
-SF_USER      = os.environ['SNOWFLAKE_USER']
-SF_PASSWORD  = os.environ['SNOWFLAKE_PASSWORD']
-SF_ROLE      = os.environ['SNOWFLAKE_ROLE']
-SF_WAREHOUSE = os.environ['SNOWFLAKE_WAREHOUSE']
-SF_DATABASE  = os.environ['SNOWFLAKE_DATABASE']
+# Optional default schema if none found
+default_schema = os.environ.get("SNOWFLAKE_SCHEMA", "PUBLIC")
 
-def get_conn():
-    return snowflake.connector.connect(
-        account   = SF_ACCOUNT,
-        user      = SF_USER,
-        password  = SF_PASSWORD,
-        role      = SF_ROLE,
-        warehouse = SF_WAREHOUSE,
-        database  = SF_DATABASE,
-        
-    )
+# ------------------ FUNCTIONS ------------------ #
 
-def parse_sql_for_tables(sql_text):
-    tables = set()
-    for patt in OPERATIONS:
-        for tbl in re.findall(patt, sql_text, re.IGNORECASE):
-            tbl = re.sub(r'[;(\s].*$', '', tbl)
-            tables.add(tbl)
-    return tables
+def get_changed_sql_files(migrations_folder="snowflake/migrations"):
+    """Return list of changed .sql files in the migrations folder."""
+    repo = Repo(".")
+    changed_files = []
+    for item in repo.index.diff("HEAD"):
+        if item.a_path.startswith(migrations_folder) and item.a_path.endswith(".sql"):
+            changed_files.append(item.a_path)
+    return changed_files
 
-def clone_table(conn, full_table):
-    # Detect schema.table or assume default SF_SCHEMA
-    if '.' in full_table:
-        schema, table = full_table.split('.', 1)
-    else:
-        schema, table = SF_SCHEMA, full_table
+def extract_table_names_from_sql(sql_text):
+    """Extract schema and table names from SQL statements."""
+    pattern = r"(ALTER|DROP|TRUNCATE)\s+TABLE\s+([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)"
+    matches = re.findall(pattern, sql_text, flags=re.IGNORECASE)
+    return [match[1] for match in matches]
 
-    ts = datetime.utcnow().strftime('%Y%m%d%H%M%S')
-    backup_name = f"{schema}.{table}_backup_{ts}"
-    cur = conn.cursor()
+def run_clone(cursor, schema, table):
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    backup_name = f"{table}_backup_{timestamp}"
+    full_src = f"{schema}.{table}"
+    full_backup = f"{schema}.{backup_name}"
+
     try:
-        # Zero‑copy clone into same schema
-        cur.execute(f"CREATE OR REPLACE TABLE {backup_name} CLONE {schema}.{table}")
-        # Enforce 7-day retention
-        cur.execute(f"ALTER TABLE {backup_name} SET DATA_RETENTION_TIME_IN_DAYS = 1")
-        print(f"✅ Cloned {schema}.{table} → {backup_name} (7‑day retention)")
+        cursor.execute(f"CREATE OR REPLACE TABLE {full_backup} CLONE {full_src}")
+        print(f"✅ Cloned {full_src} → {full_backup} (7-day retention simulated)")
     except Exception as e:
-        print(f"⚠️ Failed to clone {schema}.{table}: {e}")
-    finally:
-        cur.close()
+        print(f"❌ Failed to clone {full_src}: {e}")
+
+# ------------------ MAIN ------------------ #
 
 def main():
-    parser = argparse.ArgumentParser(description="Zero‑copy clone impacted tables before DDL")
-    parser.add_argument(
-        '--migrations-folder', required=True,
-        help='Path to your snowflake/migrations folder'
+    conn = snowflake.connector.connect(
+        account=account,
+        user=user,
+        password=password,
+        role=role,
+        warehouse=warehouse,
+        database=database
     )
-    args = parser.parse_args()
+    cursor = conn.cursor()
 
-    conn = get_conn()
-    tables = set()
+    changed_files = get_changed_sql_files()
+    print(f"🔍 Changed SQL files: {changed_files}")
+    if not changed_files:
+        print("✅ No changes in migration SQL files, skipping clone.")
+        return
 
-    # Aggregate all impacted tables
-    for root, _, files in os.walk(args.migrations_folder):
-        for fname in files:
-            if fname.lower().endswith('.sql'):
-                with open(os.path.join(root, fname)) as fh:
-                    tables |= parse_sql_for_tables(fh.read())
+    tables_to_clone = set()
+    for file in changed_files:
+        with open(file, "r") as f:
+            content = f.read()
+            tables = extract_table_names_from_sql(content)
+            for full_name in tables:
+                if "." in full_name:
+                    schema, table = full_name.split(".")
+                else:
+                    schema = default_schema
+                    table = full_name
+                tables_to_clone.add((schema, table))
 
-    # Clone each one in its own schema
-    for tbl in tables:
-        clone_table(conn, tbl)
+    if not tables_to_clone:
+        print("✅ No destructive SQL (ALTER/DROP/TRUNCATE) found.")
+        return
 
+    print(f"🔁 Cloning impacted tables...")
+    for schema, table in tables_to_clone:
+        run_clone(cursor, schema, table)
+
+    cursor.close()
     conn.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
