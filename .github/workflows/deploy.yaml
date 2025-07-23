@@ -136,6 +136,32 @@ jobs:
               --snowflake-schema "$SNOWFLAKE_SCHEMA" \
               --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" -v
           done
+      - name: Run rollback on failure
+        if: failure()
+        env:
+          SNOWFLAKE_ACCOUNT:      ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:         ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:     ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:         ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:    ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:     ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA:       ${{ secrets.SNOWFLAKE_SCHEMA }}
+        run: |
+          echo "❌ Deployment failed. Running rollback..."
+          for file in snowflake/rollback/*.sql; do
+            echo "🌀 Executing rollback: $file"
+            schemachange \
+              --root-folder snowflake/rollback \
+              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+              --snowflake-user "$SNOWFLAKE_USER" \
+              --snowflake-role "$SNOWFLAKE_ROLE" \
+              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+              --snowflake-database "$SNOWFLAKE_DATABASE" \
+              --snowflake-schema "$SNOWFLAKE_SCHEMA" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
+              --file-filter "$file" \
+              -v
+          done
 
       - name: Nothing to do
         if: steps.get-schemas.outputs.ALL_SCHEMAS == ''
