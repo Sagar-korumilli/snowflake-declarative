@@ -1,1 +1,1 @@
-ALTER TABLE sales.orders DROP COLUMN Name Varchar(20);
+ALTER TABLE sales.orders ADD COLUMN Name3 Varchar(20);
