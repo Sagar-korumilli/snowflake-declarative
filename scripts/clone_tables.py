@@ -53,7 +53,7 @@ def clone_table(conn, full_table):
         # Zero‑copy clone into same schema
         cur.execute(f"CREATE OR REPLACE TABLE {backup_name} CLONE {schema}.{table}")
         # Enforce 7-day retention
-        cur.execute(f"ALTER TABLE {backup_name} SET DATA_RETENTION_TIME_IN_DAYS = 7")
+        cur.execute(f"ALTER TABLE {backup_name} SET DATA_RETENTION_TIME_IN_DAYS = 1")
         print(f"✅ Cloned {schema}.{table} → {backup_name} (7‑day retention)")
     except Exception as e:
         print(f"⚠️ Failed to clone {schema}.{table}: {e}")
