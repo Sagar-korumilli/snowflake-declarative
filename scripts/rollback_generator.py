@@ -6,10 +6,11 @@ import snowflake.connector
 
 # Folders containing your setup and migration SQL files
 FOLDERS = ['snowflake/setup', 'snowflake/migrations']
-# Folder where rollback scripts will be written\ROLLBACK_FOLDER = 'snowflake/rollback'
+# Folder where rollback scripts will be written
+ROLLBACK_FOLDER = 'snowflake/rollback'
 Path(ROLLBACK_FOLDER).mkdir(parents=True, exist_ok=True)
 
-# Read Snowflake connection details from env vars (matching your workflow)
+# Read Snowflake connection details from env vars
 SF_ACCOUNT   = os.environ['SNOWFLAKE_ACCOUNT']
 SF_USER      = os.environ['SNOWFLAKE_USER']
 SF_PASSWORD  = os.environ['SNOWFLAKE_PASSWORD']
@@ -69,7 +70,7 @@ def generate_rollback(sql, folder_type, conn):
     for tbl, old, new in re.findall(r'ALTER\s+TABLE\s+(\S+)\s+RENAME\s+COLUMN\s+(\S+)\s+TO\s+(\S+);', sql, re.IGNORECASE):
         stmts.append(f"ALTER TABLE {tbl} RENAME COLUMN {new} TO {old};")
     # 5) CREATE OR REPLACE → DROP
-    for obj, name in re.findall(r'CREATE\s+OR\s+REPLACE\s+(TABLE|VIEW|PROC.*|SEQ.*|STAGE|FILE FORMAT)\s+(\S+)', sql, re.IGNORECASE):
+    for obj, name in re.findall(r'CREATE\s+OR\s+REPLACE\s+(TABLE|VIEW|FUNCTION|PROCEDURE|SEQUENCE|STAGE|FILE FORMAT)\s+(\S+)', sql, re.IGNORECASE):
         stmts.append(f"DROP {obj.upper()} IF EXISTS {name};")
     # 6) full_setup teardown
     if folder_type=='setup' and 'full_setup.sql' in sql.lower():
