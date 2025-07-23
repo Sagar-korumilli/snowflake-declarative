@@ -33,7 +33,7 @@ jobs:
           SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
@@ -49,7 +49,7 @@ jobs:
           SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/sql_risk_validator.py
       - name: Update dependency metadata
@@ -71,7 +71,7 @@ jobs:
           SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/dependency_checker.py
 
@@ -81,7 +81,7 @@ jobs:
           SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA:   ${{ secrets.SNOWFLAKE_SCHEMA }}
         run: |
@@ -90,10 +90,8 @@ jobs:
       - name: Get all unique schemas from setup and migrations folders
         id: get-schemas
         run: |
-          SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f
-" | awk -F '__' '{print $2}' | sort -u)
-          MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f
-" | awk -F '__' '{print $2}' | sort -u)
+          SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f" | awk -F '__' '{print $2}' | sort -u)
+          MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
           echo "CURRENT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
@@ -120,7 +118,7 @@ jobs:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$SNOWFLAKE_SCHEMA" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.SCHEMA_CHANGE_HISTORY" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
               --create-change-history-table -v
           done
 
@@ -146,7 +144,7 @@ jobs:
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
               --snowflake-schema "$SNOWFLAKE_SCHEMA" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.SCHEMA_CHANGE_HISTORY" -v
+              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" -v
           done
 
       - name: Nothing to do
