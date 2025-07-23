@@ -1,93 +1,72 @@
+import argparse
 import os
-import re
 import subprocess
+import re
 from datetime import datetime
 import snowflake.connector
-from pathlib import Path
-from git import Repo
 
-# ------------------ ENV VARS ------------------ #
-account = os.environ["SNOWFLAKE_ACCOUNT"]
-user = os.environ["SNOWFLAKE_USER"]
-password = os.environ["SNOWFLAKE_PASSWORD"]
-role = os.environ["SNOWFLAKE_ROLE"]
-warehouse = os.environ["SNOWFLAKE_WAREHOUSE"]
-database = os.environ["SNOWFLAKE_DATABASE"]
+parser = argparse.ArgumentParser()
+parser.add_argument('--migrations-folder', required=True)
+args = parser.parse_args()
 
-# Optional default schema if none found
-default_schema = os.environ.get("SNOWFLAKE_SCHEMA", "PUBLIC")
+SNOWFLAKE_ACCOUNT   = os.getenv('SNOWFLAKE_ACCOUNT')
+SNOWFLAKE_USER      = os.getenv('SNOWFLAKE_USER')
+SNOWFLAKE_PASSWORD  = os.getenv('SNOWFLAKE_PASSWORD')
+SNOWFLAKE_ROLE      = os.getenv('SNOWFLAKE_ROLE')
+SNOWFLAKE_WAREHOUSE = os.getenv('SNOWFLAKE_WAREHOUSE')
+SNOWFLAKE_DATABASE  = os.getenv('SNOWFLAKE_DATABASE')
 
-# ------------------ FUNCTIONS ------------------ #
+# Use git diff from previous to current commit
+try:
+    base_sha = subprocess.check_output(["git", "rev-parse", "HEAD^"]).decode().strip()
+    head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    diff_output = subprocess.check_output(
+        ["git", "diff", "--name-only", base_sha, head_sha]
+    ).decode().splitlines()
 
-def get_changed_sql_files(migrations_folder="snowflake/migrations"):
-    """Return list of changed .sql files in the migrations folder."""
-    repo = Repo(".")
+    changed_files = [
+        f for f in diff_output
+        if f.endswith(".sql") and args.migrations_folder in f
+    ]
+except subprocess.CalledProcessError as e:
+    print("⚠️ Git diff failed:", e)
     changed_files = []
-    for item in repo.index.diff("HEAD"):
-        if item.a_path.startswith(migrations_folder) and item.a_path.endswith(".sql"):
-            changed_files.append(item.a_path)
-    return changed_files
 
-def extract_table_names_from_sql(sql_text):
-    """Extract schema and table names from SQL statements."""
-    pattern = r"(ALTER|DROP|TRUNCATE)\s+TABLE\s+([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)"
-    matches = re.findall(pattern, sql_text, flags=re.IGNORECASE)
-    return [match[1] for match in matches]
+if not changed_files:
+    print("✅ No relevant changed SQL files found, skipping clone.")
+    exit(0)
 
-def run_clone(cursor, schema, table):
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    backup_name = f"{table}_backup_{timestamp}"
-    full_src = f"{schema}.{table}"
-    full_backup = f"{schema}.{backup_name}"
+print("🔍 Changed SQL files:", changed_files)
 
-    try:
-        cursor.execute(f"CREATE OR REPLACE TABLE {full_backup} CLONE {full_src}")
-        print(f"✅ Cloned {full_src} → {full_backup} (7-day retention simulated)")
-    except Exception as e:
-        print(f"❌ Failed to clone {full_src}: {e}")
+# Connect to Snowflake
+conn = snowflake.connector.connect(
+    account=SNOWFLAKE_ACCOUNT,
+    user=SNOWFLAKE_USER,
+    password=SNOWFLAKE_PASSWORD,
+    role=SNOWFLAKE_ROLE,
+    warehouse=SNOWFLAKE_WAREHOUSE,
+    database=SNOWFLAKE_DATABASE
+)
+cur = conn.cursor()
 
-# ------------------ MAIN ------------------ #
+# Look for ALTER/TRUNCATE/DROP and clone those tables
+for file_path in changed_files:
+    with open(file_path, "r") as f:
+        sql = f.read()
 
-def main():
-    conn = snowflake.connector.connect(
-        account=account,
-        user=user,
-        password=password,
-        role=role,
-        warehouse=warehouse,
-        database=database
+    matches = re.findall(
+        r'(?:ALTER|TRUNCATE|DROP)\s+TABLE\s+(\w+)\.(\w+)', sql, re.IGNORECASE
     )
-    cursor = conn.cursor()
+    for schema, table in matches:
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        backup_name = f"{table}_backup_{timestamp}"
+        clone_sql = f"""CREATE OR REPLACE TABLE {schema}.{backup_name} 
+                        CLONE {schema}.{table} 
+                        RETENTION_TIME = 7;"""
 
-    changed_files = get_changed_sql_files()
-    print(f"🔍 Changed SQL files: {changed_files}")
-    if not changed_files:
-        print("✅ No changes in migration SQL files, skipping clone.")
-        return
+        print(f"🛡️ Cloning {schema}.{table} → {schema}.{backup_name}")
+        cur.execute(f"USE DATABASE {SNOWFLAKE_DATABASE}")
+        cur.execute(clone_sql)
 
-    tables_to_clone = set()
-    for file in changed_files:
-        with open(file, "r") as f:
-            content = f.read()
-            tables = extract_table_names_from_sql(content)
-            for full_name in tables:
-                if "." in full_name:
-                    schema, table = full_name.split(".")
-                else:
-                    schema = default_schema
-                    table = full_name
-                tables_to_clone.add((schema, table))
-
-    if not tables_to_clone:
-        print("✅ No destructive SQL (ALTER/DROP/TRUNCATE) found.")
-        return
-
-    print(f"🔁 Cloning impacted tables...")
-    for schema, table in tables_to_clone:
-        run_clone(cursor, schema, table)
-
-    cursor.close()
-    conn.close()
-
-if __name__ == "__main__":
-    main()
+cur.close()
+conn.close()
