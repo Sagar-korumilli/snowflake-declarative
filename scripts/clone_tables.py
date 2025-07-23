@@ -54,7 +54,7 @@ def clone_table(conn, full_table):
     cur = conn.cursor()
     try:
         cur.execute(f"CREATE OR REPLACE TABLE {backup_name} CLONE {schema}.{table}")
-        cur.execute(f"ALTER TABLE {backup_name} SET DATA_RETENTION_TIME_IN_DAYS = 7")
+        cur.execute(f"ALTER TABLE {backup_name} SET DATA_RETENTION_TIME_IN_DAYS = 1")
         print(f"✅ Cloned {schema}.{table} → {backup_name} (7‑day retention)")
     except Exception as e:
         print(f"⚠️ Failed to clone {schema}.{table}: {e}")
