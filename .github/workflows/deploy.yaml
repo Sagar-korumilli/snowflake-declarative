@@ -29,11 +29,11 @@ jobs:
 
       - name: Validate Snowflake env vars
         env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PASSWORD SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
@@ -44,55 +44,58 @@ jobs:
           done
 
       - name: Validate for risky SQL
-        # This step flags DROP, TRUNCATE, or DROP COLUMN but not ADD COLUMN
         env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/sql_risk_validator.py
 
       - name: Check object dependencies
         env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/dependency_checker.py
 
       - name: Generate rollback scripts
         env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: python scripts/rollback_generator.py
+          SNOWFLAKE_SCHEMA:   ${{ secrets.SNOWFLAKE_SCHEMA }}
+        run: |
+          python scripts/rollback_generator.py
 
       - name: Get all unique schemas from setup and migrations folders
         id: get-schemas
         run: |
-          SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
-          MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
+          SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f
+" | awk -F '__' '{print $2}' | sort -u)
+          MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f
+" | awk -F '__' '{print $2}' | sort -u)
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
-          CURRENT_COMMIT=$(git rev-parse HEAD)
-          echo "CURRENT_COMMIT=${CURRENT_COMMIT}" >> $GITHUB_OUTPUT
+          echo "CURRENT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
         if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ACCOUNT:      ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:         ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:     ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:         ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:    ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:     ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA:       ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
           set -euo pipefail
@@ -104,35 +107,34 @@ jobs:
               --snowflake-role "$SNOWFLAKE_ROLE" \
               --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
               --snowflake-database "$SNOWFLAKE_DATABASE" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
-              --create-change-history-table \
-              -v
+              --snowflake-schema "$SNOWFLAKE_SCHEMA" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.SCHEMA_CHANGE_HISTORY" \
+              --create-change-history-table -v
           done
 
       - name: Apply incremental migrations
         if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ACCOUNT:      ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:         ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:     ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:         ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:    ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:     ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA:       ${{ secrets.SNOWFLAKE_SCHEMA }}
           SNOWFLAKE_OCSP_FAIL_OPEN: "true"
         run: |
           set -euo pipefail
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            if [ -d "snowflake/migrations" ]; then
-              schemachange \
-                --root-folder snowflake/migrations \
-                --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-                --snowflake-user "$SNOWFLAKE_USER" \
-                --snowflake-role "$SNOWFLAKE_ROLE" \
-                --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-                --snowflake-database="$SNOWFLAKE_DATABASE" \
-                --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
-                -v
-            fi
+            schemachange \
+              --root-folder snowflake/migrations \
+              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+              --snowflake-user "$SNOWFLAKE_USER" \
+              --snowflake-role "$SNOWFLAKE_ROLE" \
+              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+              --snowflake-database "$SNOWFLAKE_DATABASE" \
+              --snowflake-schema "$SNOWFLAKE_SCHEMA" \
+              --change-history-table "${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.SCHEMA_CHANGE_HISTORY" -v
           done
 
       - name: Nothing to do
