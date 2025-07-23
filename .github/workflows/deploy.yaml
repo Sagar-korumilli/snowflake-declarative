@@ -63,7 +63,7 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/dependency_checker.py
 
-      - name: Generate rollback scripts
+      - name: Backup tables using zero-copy
         env:
           SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
@@ -72,8 +72,10 @@ jobs:
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA:   ${{ secrets.SNOWFLAKE_SCHEMA }}
+        
         run: |
-          python scripts/rollback_generator.py
+          python scripts/clone_tables.py \
+            --migrations-folder snowflake/migrations
 
       - name: Get all unique schemas from setup and migrations folders
         id: get-schemas
