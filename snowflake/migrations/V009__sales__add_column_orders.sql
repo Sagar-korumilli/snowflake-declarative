@@ -1,0 +1,1 @@
+ALTER TABLE sales.order ADD COLUMN Name5 VARCHAR(20);
