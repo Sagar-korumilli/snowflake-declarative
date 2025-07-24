@@ -25,21 +25,23 @@ jobs:
           pip install --upgrade pip
           pip install schemachange==4.0.1 snowflake-connector-python
 
-      - name: Validate env vars
+      - name: Validate env vars and connections file
         env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:       ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v}" ]; then
-              echo "❌ Missing $v" && exit 1
-            fi
-          done
+          # Ensure private key and connections.toml exist
+          if [ -z "$SNOWFLAKE_PRIVATE_KEY" ]; then
+            echo "❌ Missing SNOWFLAKE_PRIVATE_KEY" && exit 1
+          fi
+          if [ ! -f connections.toml ]; then
+            echo "❌ connections.toml not found in repo root" && exit 1
+          fi
 
       - name: Write private key file
         run: |
@@ -48,34 +50,11 @@ jobs:
         env:
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
 
-      - name: Generate connections.toml
-        run: |
-          (
-            echo '[connections]'
-            echo '  [connections.snowflake]'
-            echo "    account              = \"${SNOWFLAKE_ACCOUNT}\""
-            echo "    user                 = \"${SNOWFLAKE_USER}\""
-            echo "    private_key_file     = \"key.pem\""
-            echo "    private_key_file_pwd = \"${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}\""
-            echo "    authenticator        = \"snowflake_jwt\""
-            echo "    role                 = \"${SNOWFLAKE_ROLE}\""
-            echo "    warehouse            = \"${SNOWFLAKE_WAREHOUSE}\""
-            echo "    database             = \"${SNOWFLAKE_DATABASE}\""
-          ) > connections.toml
-          chmod 600 connections.toml
-        env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-
       - name: Dry‑run setup folder
         run: |
           schemachange deploy \
             --connections-file-path connections.toml \
-            --connection-name ['connections'] \
+            --connection-name snowflake \
             --root-folder snowflake/setup \
             --dry-run
 
@@ -83,6 +62,6 @@ jobs:
         run: |
           schemachange deploy \
             --connections-file-path connections.toml \
-            --connection-name ['connections'] \
+            --connection-name snowflake \
             --root-folder snowflake/migrations \
             --dry-run
