@@ -83,6 +83,6 @@ jobs:
         run: |
           schemachange deploy \
             --connections-file-path connections.toml \
-            --connection-name snowflake \
+            --connection-name ['connections'] \
             --root-folder snowflake/migrations \
             --dry-run
