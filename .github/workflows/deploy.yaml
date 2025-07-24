@@ -48,19 +48,19 @@ jobs:
         env:
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
 
-      - name: Generate connections.toml
+      - name: Generate connections.toml via echo
         run: |
-          cat > connections.toml <<EOF
-[connections.snowflake]
-account              = "${SNOWFLAKE_ACCOUNT}"
-user                 = "${SNOWFLAKE_USER}"
-private_key_file     = "key.pem"
-private_key_file_pwd = "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-authenticator        = "snowflake_jwt"
-role                 = "${SNOWFLAKE_ROLE}"
-warehouse            = "${SNOWFLAKE_WAREHOUSE}"
-database             = "${SNOWFLAKE_DATABASE}"
-EOF
+          (
+            echo '[connections.snowflake]'
+            echo "account              = \"${SNOWFLAKE_ACCOUNT}\""
+            echo "user                 = \"${SNOWFLAKE_USER}\""
+            echo "private_key_file     = \"key.pem\""
+            echo "private_key_file_pwd = \"${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}\""
+            echo "authenticator        = \"snowflake_jwt\""
+            echo "role                 = \"${SNOWFLAKE_ROLE}\""
+            echo "warehouse            = \"${SNOWFLAKE_WAREHOUSE}\""
+            echo "database             = \"${SNOWFLAKE_DATABASE}\""
+          ) > connections.toml
           chmod 600 connections.toml
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
