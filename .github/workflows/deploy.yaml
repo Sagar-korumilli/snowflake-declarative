@@ -51,15 +51,16 @@ jobs:
       - name: Generate connections.toml
         run: |
           cat > connections.toml <<EOF
-            [connections.snowflake]
-            account             = "${SNOWFLAKE_ACCOUNT}"
-            user                = "${SNOWFLAKE_USER}"
-            private_key_file    = "key.pem"
-            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-            authenticator       = "snowflake_jwt"
-            role                = "${SNOWFLAKE_ROLE}"
-            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
-            database            = "${SNOWFLAKE_DATABASE}"
+            [connections]
+              [connections.snowflake]
+              account             = "${SNOWFLAKE_ACCOUNT}"
+              user                = "${SNOWFLAKE_USER}"
+              private_key_file    = "key.pem"
+              private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+              authenticator       = "snowflake_jwt"
+              role                = "${SNOWFLAKE_ROLE}"
+              warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+              database            = "${SNOWFLAKE_DATABASE}"
           EOF
           chmod 600 connections.toml
         env:
