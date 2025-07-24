@@ -1,3 +1,4 @@
+
 name: 🧪 Schemachange Dry‑Run (Key‑Pair + connections.toml)
 
 on:
@@ -76,6 +77,7 @@ jobs:
             --connections-file connections.toml \
             --connection-name connections \
             --root-folder snowflake/setup \
+            --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
             --dry-run
 
       - name: Dry‑run migrations folder
@@ -84,4 +86,5 @@ jobs:
             --config-file connections.toml \
             --connection-name connections \
             --root-folder snowflake/migrations \
+            --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
             --dry-run
