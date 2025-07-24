@@ -52,7 +52,6 @@ jobs:
         run: |
           cat > connections.toml <<EOF
             [connections]
-              [connections.snowflake]
               account             = "${SNOWFLAKE_ACCOUNT}"
               user                = "${SNOWFLAKE_USER}"
               private_key_file    = "key.pem"
@@ -74,15 +73,15 @@ jobs:
       - name: Dry‑run setup folder
         run: |
           schemachange deploy \
-            --connections-file connections.toml \
-            --connection-name snowflake \
+            --config-file connections.toml \
+            --connection-name connections \
             --root-folder snowflake/setup \
             --dry-run
 
       - name: Dry‑run migrations folder
         run: |
           schemachange deploy \
-            --connections-file connections.toml \
-            --connection-name snowflake \
+            --config-file connections.toml \
+            --connection-name connections \
             --root-folder snowflake/migrations \
             --dry-run
