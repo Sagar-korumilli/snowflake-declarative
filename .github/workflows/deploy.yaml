@@ -1,4 +1,4 @@
-name: 🛠️ Schemachange Dry‑Run Test
+name: 🧪 Schemachange Dry‑Run (Key‑Pair + connections.toml)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  schemachange-test:
+  dry-run:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -25,23 +25,21 @@ jobs:
           pip install --upgrade pip
           pip install schemachange==4.0.1 snowflake-connector-python
 
-      - name: Validate env vars and connections file
+      - name: Validate env vars
         env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:       ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          # Ensure private key and connections.toml exist
-          if [ -z "$SNOWFLAKE_PRIVATE_KEY" ]; then
-            echo "❌ Missing SNOWFLAKE_PRIVATE_KEY" && exit 1
-          fi
-          if [ ! -f connections.toml ]; then
-            echo "❌ connections.toml not found in repo root" && exit 1
-          fi
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Missing $v" && exit 1
+            fi
+          done
 
       - name: Write private key file
         run: |
@@ -50,18 +48,40 @@ jobs:
         env:
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
 
+      - name: Generate connections.toml
+        run: |
+          cat > connections.toml <<EOF
+            [connections.snowflake]
+            account             = "${SNOWFLAKE_ACCOUNT}"
+            user                = "${SNOWFLAKE_USER}"
+            private_key_file    = "key.pem"
+            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+            authenticator       = "snowflake_jwt"
+            role                = "${SNOWFLAKE_ROLE}"
+            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+            database            = "${SNOWFLAKE_DATABASE}"
+          EOF
+          chmod 600 connections.toml
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+
       - name: Dry‑run setup folder
         run: |
           schemachange deploy \
-            --connections-file-path connections.toml \
-            --connection-name snowflake \
+            --connections-file connections.toml \
+            --connections-profile snowflake \
             --root-folder snowflake/setup \
             --dry-run
 
       - name: Dry‑run migrations folder
         run: |
           schemachange deploy \
-            --connections-file-path connections.toml \
-            --connection-name snowflake \
+            --connections-file connections.toml \
+            --connections-profile snowflake \
             --root-folder snowflake/migrations \
             --dry-run
