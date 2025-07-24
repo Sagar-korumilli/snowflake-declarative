@@ -74,7 +74,7 @@ jobs:
         run: |
           schemachange deploy \
             --connections-file connections.toml \
-            --connections-profile snowflake \
+            --connection-name snowflake \
             --root-folder snowflake/setup \
             --dry-run
 
@@ -82,6 +82,6 @@ jobs:
         run: |
           schemachange deploy \
             --connections-file connections.toml \
-            --connections-profile snowflake \
+            --connection-name snowflake \
             --root-folder snowflake/migrations \
             --dry-run
