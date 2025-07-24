@@ -72,6 +72,8 @@ jobs:
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
 
       - name: Dry‑run setup folder
+        env:
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           schemachange deploy \
             --connections-file connections.toml \
@@ -81,6 +83,8 @@ jobs:
             --dry-run
 
       - name: Dry‑run migrations folder
+        env:
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           schemachange deploy \
             --config-file connections.toml \
