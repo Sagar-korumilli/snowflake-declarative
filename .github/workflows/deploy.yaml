@@ -1,4 +1,4 @@
-name: 🧪 Schemachange Dry‑Run (Key‑Pair + connections.toml)
+name: 🛠️ Schemachange Dry‑Run Test
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  dry-run:
+  schemachange-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -51,15 +51,17 @@ jobs:
       - name: Generate connections.toml
         run: |
           cat > connections.toml <<EOF
-          [snowflake]
-          account             = "${SNOWFLAKE_ACCOUNT}"
-          user                = "${SNOWFLAKE_USER}"
-          private_key_file    = "key.pem"
-          private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-          role                = "${SNOWFLAKE_ROLE}"
-          warehouse           = "${SNOWFLAKE_WAREHOUSE}"
-          database            = "${SNOWFLAKE_DATABASE}"
-          EOF
+            [connections.snowflake]
+            account              = "${SNOWFLAKE_ACCOUNT}"
+            user                 = "${SNOWFLAKE_USER}"
+            private_key_file     = "key.pem"
+            private_key_file_pwd = "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+            authenticator        = "snowflake_jwt"
+            role                 = "${SNOWFLAKE_ROLE}"
+            warehouse            = "${SNOWFLAKE_WAREHOUSE}"
+            database             = "${SNOWFLAKE_DATABASE}"
+            EOF
+          chmod 600 connections.toml
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
@@ -72,14 +74,15 @@ jobs:
         run: |
           schemachange deploy \
             --connections-file connections.toml \
+            --connections-profile snowflake \
             --root-folder snowflake/setup \
             --dry-run
-        # uses credentials from connections.toml and key.pem :contentReference[oaicite:0]{index=0}
 
       - name: Dry‑run migrations folder
         run: |
           schemachange deploy \
             --connections-file connections.toml \
+            --connections-profile snowflake \
             --root-folder snowflake/migrations \
-            --dry-run 
+            --dry-run
             --verbose
