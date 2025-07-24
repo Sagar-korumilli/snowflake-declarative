@@ -112,7 +112,7 @@ jobs:
         if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
         run: |
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            schemachange \
+            schemachange deploy \
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/setup \
@@ -124,7 +124,7 @@ jobs:
         if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
         run: |
           for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            schemachange \
+            schemachange deploy \
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/migrations \
@@ -137,7 +137,7 @@ jobs:
           echo "❌ Deployment failed. Running rollback..."
           for file in snowflake/rollback/*.sql; do
             echo "🌀 Executing rollback: $file"
-            schemachange \
+            schemachange deploy \
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/rollback \
