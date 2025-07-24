@@ -9,12 +9,30 @@ from snowflake.connector.errors import ProgrammingError
 # --- Configuration ---
 SQL_FOLDERS = ['snowflake/setup', 'snowflake/migrations']
 SCHEMA_FROM_FILENAME_RE = re.compile(r'__([a-zA-Z0-9_]+)__', re.IGNORECASE)
+
 DESTRUCTIVE_PATTERNS = {
     'TABLE': [
         re.compile(r'\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE),
         re.compile(r'\bTRUNCATE\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
     ],
-    # ... (other patterns unchanged) ...
+    'VIEW': [
+        re.compile(r'\bDROP\s+VIEW\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
+    ],
+    'FUNCTION': [
+        re.compile(r'\bDROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?([^\s(;]+)', re.IGNORECASE)
+    ],
+    'PROCEDURE': [
+        re.compile(r'\bDROP\s+PROCEDURE\s+(?:IF\s+EXISTS\s+)?([^\s(;]+)', re.IGNORECASE)
+    ],
+    'STAGE': [
+        re.compile(r'\bDROP\s+STAGE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
+    ],
+    'FILE FORMAT': [
+        re.compile(r'\bDROP\s+FILE\s+FORMAT\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
+    ],
+    'SEQUENCE': [
+        re.compile(r'\bDROP\s+SEQUENCE\s+(?:IF\s+EXISTS\s+)?([^\s;]+)', re.IGNORECASE)
+    ],
     'ALTER_TABLE_DROP_COLUMN': [
         re.compile(r'\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s]+)\s+DROP\s+COLUMN\s+([^\s;]+)', re.IGNORECASE)
     ]
@@ -23,20 +41,16 @@ DESTRUCTIVE_PATTERNS = {
 def parse_fully_qualified_name(name_str, default_db, default_schema):
     parts = name_str.upper().replace('"', '').split('.')
     if len(parts) == 3:
-        return parts
+        return (parts[0], parts[1], parts[2])
     elif len(parts) == 2:
-        return default_db, parts[0], parts[1]
+        return (default_db, parts[0], parts[1])
     elif len(parts) == 1 and default_schema:
-        return default_db, default_schema, parts[0]
+        return (default_db, default_schema, parts[0])
     return (None, None, None)
 
 def validate_env_vars():
-    required = [
-        'SNOWFLAKE_USER', 'SNOWFLAKE_ACCOUNT',
-        'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE',
-        'SNOWFLAKE_DATABASE',
-        'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'
-    ]
+    required = ['SNOWFLAKE_USER', 'SNOWFLAKE_PASSWORD', 'SNOWFLAKE_ACCOUNT',
+                'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE']
     missing = [v for v in required if not os.environ.get(v)]
     if missing:
         print(f"❌ Missing required environment variables: {', '.join(missing)}")
@@ -48,6 +62,7 @@ def main():
     args = parser.parse_args()
 
     validate_env_vars()
+
     target_db = os.environ['SNOWFLAKE_DATABASE']
     impacted_objects = {}
 
@@ -62,17 +77,23 @@ def main():
             schema_match = SCHEMA_FROM_FILENAME_RE.search(fname)
             default_schema = schema_match.group(1).upper() if schema_match else None
 
-            content = open(os.path.join(folder, fname), 'r', encoding='utf-8').read()
+            file_path = os.path.join(folder, fname)
+            with open(file_path, 'r', encoding='utf-8') as f:
+                sql_content = f.read()
+
             for domain, regex_list in DESTRUCTIVE_PATTERNS.items():
-                for rx in regex_list:
-                    for m in rx.finditer(content):
-                        dom = 'TABLE' if domain == 'ALTER_TABLE_DROP_COLUMN' else domain
-                        name_literal = m.group(1)
-                        db, sch, name = parse_fully_qualified_name(name_literal, target_db.upper(), default_schema)
-                        if not all([db, sch, name]):
-                            print(f"❌ Could not parse {name_literal} in {fname}")
+                for regex in regex_list:
+                    for match in regex.finditer(sql_content):
+                        object_domain = 'TABLE' if domain == 'ALTER_TABLE_DROP_COLUMN' else domain
+                        unparsed_name = match.group(1)
+
+                        db, schema, name = parse_fully_qualified_name(unparsed_name, target_db.upper(), default_schema)
+                        if not all([db, schema, name]):
+                            print(f"❌ Could not parse object: {unparsed_name} in file {fname}")
                             sys.exit(1)
-                        impacted_objects.setdefault((dom, db, sch, name), []).append(fname)
+
+                        key = (object_domain, db, schema, name)
+                        impacted_objects.setdefault(key, []).append(fname)
 
     if not impacted_objects:
         print("✅ No destructive operations found.")
@@ -80,53 +101,49 @@ def main():
 
     print(f"\n🔍 Step 2: Checking downstream dependencies for {len(impacted_objects)} object(s)...")
 
-    # Write out the key file
-    key = os.environ['SNOWFLAKE_PRIVATE_KEY']
-    with open('key.pem', 'w') as f:
-        f.write(key)
-    os.chmod('key.pem', 0o600)
+    try:
+        ctx = snowflake.connector.connect(
+            user=os.environ['SNOWFLAKE_USER'],
+            password=os.environ['SNOWFLAKE_PASSWORD'],
+            account=os.environ['SNOWFLAKE_ACCOUNT'],
+            warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
+            role=os.environ['SNOWFLAKE_ROLE'],
+            database=target_db
+        )
+        cur = ctx.cursor()
+    except Exception as e:
+        print(f"❌ Connection failed: {e}")
+        sys.exit(1)
 
-    # Connect via key-pair auth
-    ctx = snowflake.connector.connect(
-        account=os.environ['SNOWFLAKE_ACCOUNT'],
-        user=os.environ['SNOWFLAKE_USER'],
-        role=os.environ['SNOWFLAKE_ROLE'],
-        warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
-        database=target_db,
-        authenticator='snowflake_jwt',
-        private_key_file='key.pem',
-        private_key_file_pwd=os.environ['SNOWFLAKE_PRIVATE_KEY_PASSPHRASE']
-    )
-    cur = ctx.cursor()
+    blocking_dependencies = []
 
-    blocking = []
-    for (dom, db, sch, nm), files in impacted_objects.items():
-        print(f"🔗 Checking: {dom} {db}.{sch}.{nm} (from {', '.join(files)})")
-        q = f"""
-            SELECT REFERENCING_DATABASE,
-                   REFERENCING_SCHEMA,
-                   REFERENCING_OBJECT_NAME,
-                   REFERENCING_OBJECT_DOMAIN
-              FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
-             WHERE REFERENCED_DATABASE = '{db}'
-               AND REFERENCED_SCHEMA   = '{sch}'
-               AND REFERENCED_OBJECT_NAME   = '{nm}'
-               AND REFERENCED_OBJECT_DOMAIN = '{dom}'
-               AND REFERENCING_OBJECT_ID != REFERENCED_OBJECT_ID
+    for (domain, db, schema, name), files in impacted_objects.items():
+        print(f"🔗 Checking: {domain} {db}.{schema}.{name} (from {', '.join(files)})")
+        query = f"""
+            SELECT
+                REFERENCING_DATABASE,
+                REFERENCING_SCHEMA,
+                REFERENCING_OBJECT_NAME,
+                REFERENCING_OBJECT_DOMAIN
+            FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
+            WHERE REFERENCED_DATABASE = '{db}'
+              AND REFERENCED_SCHEMA = '{schema}'
+              AND REFERENCED_OBJECT_NAME = '{name}'
+              AND REFERENCED_OBJECT_DOMAIN = '{domain}'
+              AND REFERENCING_OBJECT_ID != REFERENCED_OBJECT_ID
         """
         try:
-            cur.execute(q)
+            cur.execute(query)
             for row in cur.fetchall():
-                blocking.append({
-                    "dropped_domain": dom,
-                    "dropped_name": f"{db}.{sch}.{nm}",
+                blocking_dependencies.append({
+                    "dropped_domain": domain,
+                    "dropped_name": f"{db}.{schema}.{name}",
                     "dependent_domain": row[3],
                     "dependent_name": f"{row[0]}.{row[1]}.{row[2]}"
                 })
         except ProgrammingError as e:
-            msg = str(e).lower()
-            if "does not exist" in msg:
-                print(f"ℹ️ {db}.{sch}.{nm} not found; skipping.")
+            if "does not exist" in str(e):
+                print(f"ℹ️ Object {db}.{schema}.{name} does not exist. Skipping.")
                 continue
             print(f"❌ Query failed: {e}")
             sys.exit(1)
@@ -134,22 +151,26 @@ def main():
     cur.close()
     ctx.close()
 
-    # Filter out cases where both dropped and dependent are in the same change set
-    dropped_keys = {f"{d}.{db}.{sch}.{nm}" for (d, db, sch, nm) in impacted_objects}
-    final_blockers = [b for b in blocking if b['dependent_name'].upper() not in dropped_keys]
+    dropped_keys = {f"{domain}.{db}.{schema}.{name}" for (domain, db, schema, name) in impacted_objects}
+    truly_blocking = []
+    for dep in blocking_dependencies:
+        dep_key = f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}"
+        if dep_key not in dropped_keys:
+            truly_blocking.append(dep)
 
+    # Save report
     with open("blocking_dependencies.json", "w") as f:
-        json.dump(final_blockers, f, indent=2)
+        json.dump(truly_blocking, f, indent=2)
 
-    if final_blockers:
+    if truly_blocking:
         print("\n❌ Blocking dependencies found:")
-        for b in final_blockers:
-            print(f" • {b['dependent_name']} ({b['dependent_domain']}) depends on {b['dropped_name']}")
+        for dep in truly_blocking:
+            print(f" • {dep['dependent_name']} ({dep['dependent_domain']}) depends on {dep['dropped_name']}")
         if not args.dry_run:
             print("🚫 Exiting due to dependency violations.")
             sys.exit(1)
         else:
-            print("⚠️ Dry-run — not exiting with error.")
+            print("⚠️ Dry run mode active — not exiting with error.")
     else:
         print("✅ No blocking dependencies. Safe to proceed.")
 
