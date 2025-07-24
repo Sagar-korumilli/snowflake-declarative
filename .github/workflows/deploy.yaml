@@ -73,7 +73,7 @@ jobs:
       - name: Dry‑run setup folder
         run: |
           schemachange deploy \
-            --config-file connections.toml \
+            --connections-file connections.toml \
             --connection-name connections \
             --root-folder snowflake/setup \
             --dry-run
