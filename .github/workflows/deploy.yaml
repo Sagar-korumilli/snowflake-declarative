@@ -26,7 +26,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install schemachange==4.0.1 snowflake-connector-python GitPython
-
       - name: Validate Snowflake env vars
         env:
           SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -42,7 +41,6 @@ jobs:
               exit 1
             fi
           done
-
       - name: Validate for risky SQL
         env:
           SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -76,7 +74,6 @@ jobs:
         run: |
           python scripts/clone_tables.py \
             --migrations-folder snowflake/migrations
-
       - name: Get all unique schemas from setup and migrations folders
         id: get-schemas
         run: |
@@ -85,7 +82,6 @@ jobs:
           ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
           echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
           echo "CURRENT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
       - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
         if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
@@ -111,7 +107,6 @@ jobs:
               --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
               --create-change-history-table -v
           done
-
       - name: Apply incremental migrations
         if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
         env:
@@ -162,7 +157,6 @@ jobs:
               --file-filter "$file" \
               -v
           done
-
       - name: Nothing to do
         if: steps.get-schemas.outputs.ALL_SCHEMAS == ''
         run: echo "✔️ No schema files found. Skipping deployment."
