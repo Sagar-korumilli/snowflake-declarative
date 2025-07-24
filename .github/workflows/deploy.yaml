@@ -1,181 +1,85 @@
-name: ❄️ Snowflake Full Deploy
+name: 🧪 Schemachange Dry‑Run
 
 on:
-  push:
-    branches:
-      - keypair
   workflow_dispatch:
 
 jobs:
-  deploy:
+  dry-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install schemachange
         run: |
           pip install --upgrade pip
-          pip install schemachange==4.0.1 snowflake-connector-python GitPython
+          pip install schemachange snowflake-connector-python
 
-      - name: Validate Snowflake env vars
+      - name: Validate env vars
         env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:       ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE; do
             if [ -z "${!v}" ]; then
-              echo "❌ Missing $v"
-              exit 1
+              echo "❌ Missing $v" && exit 1
             fi
           done
 
-      - name: Setup Snowflake keypair
+      - name: Write private key
         run: |
-          echo "$SNOWFLAKE_PRIVATE_KEY" > private_key.pem
-          chmod 600 private_key.pem
+          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
         env:
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
 
-      - name: Validate for risky SQL
+      - name: Dry‑run setup folder
         env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:  private_key.pem
+          SNOWFLAKE_ACCOUNT:             ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PATH:    key.pem
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: python scripts/sql_risk_validator.py
-
-      - name: Check object dependencies
-        env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:  private_key.pem
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: python scripts/dependency_checker.py
-
-      - name: Backup tables using zero-copy
-        env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:  private_key.pem
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
-          SNOWFLAKE_SCHEMA:            ${{ secrets.SNOWFLAKE_SCHEMA }}
+          SNOWFLAKE_ROLE:                ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:           ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:            ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          python scripts/clone_tables.py \
-            --migrations-folder snowflake/migrations
+          schemachange \
+            --root-folder snowflake/setup \
+            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+            --snowflake-user "$SNOWFLAKE_USER" \
+            --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
+            --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
+            --snowflake-role "$SNOWFLAKE_ROLE" \
+            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+            --snowflake-database "$SNOWFLAKE_DATABASE" \
+            --dry-run
 
-      - name: Get all unique schemas from setup and migrations folders
-        id: get-schemas
-        run: |
-          SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f" | awk -F '__' '{print $2}' | sort -u)
-          MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
-          ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-          echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
-          echo "CURRENT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
-        if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
-        env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:  private_key.pem
+      - name: Dry‑run migrations folder
+        env: # same env block as above
+          SNOWFLAKE_ACCOUNT:             ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PATH:    key.pem
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ROLE:                ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:           ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:            ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          set -euo pipefail
-          for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            schemachange \
-              --root-folder snowflake/setup \
-              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-              --snowflake-user "$SNOWFLAKE_USER" \
-              --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
-              --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
-              --snowflake-role "$SNOWFLAKE_ROLE" \
-              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-              --snowflake-database "$SNOWFLAKE_DATABASE" \
-              --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
-              --create-change-history-table -v
-          done
-
-      - name: Apply incremental migrations
-        if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
-        env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:  private_key.pem
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: |
-          set -euo pipefail
-          for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            schemachange \
-              --root-folder snowflake/migrations \
-              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-              --snowflake-user "$SNOWFLAKE_USER" \
-              --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
-              --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
-              --snowflake-role "$SNOWFLAKE_ROLE" \
-              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-              --snowflake-database "$SNOWFLAKE_DATABASE" \
-              --snowflake-schema "$schema_name" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" -v
-          done
-
-      - name: Run rollback on failure
-        if: failure()
-        env:
-          SNOWFLAKE_ACCOUNT:           ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:              ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:  private_key.pem
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:              ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:         ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:          ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: |
-          echo "❌ Deployment failed. Running rollback..."
-          for file in snowflake/rollback/*.sql; do
-            echo "🌀 Executing rollback: $file"
-            schemachange \
-              --root-folder snowflake/rollback \
-              --file-filter "$file" \
-              --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-              --snowflake-user "$SNOWFLAKE_USER" \
-              --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
-              --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
-              --snowflake-role "$SNOWFLAKE_ROLE" \
-              --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-              --snowflake-database "$SNOWFLAKE_DATABASE" \
-              --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" -v
-          done
-
-      - name: Nothing to do
-        if: steps.get-schemas.outputs.ALL_SCHEMAS == ''
-        run: echo "✔️ No schema files found. Skipping deployment."
+          schemachange \
+            --root-folder snowflake/migrations \
+            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+            --snowflake-user "$SNOWFLAKE_USER" \
+            --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
+            --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
+            --snowflake-role "$SNOWFLAKE_ROLE" \
+            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+            --snowflake-database "$SNOWFLAKE_DATABASE" \
+            --dry-run
