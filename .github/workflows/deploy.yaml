@@ -87,7 +87,7 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           schemachange deploy \
-            --config-file connections.toml \
+            --connections-file connections.toml \
             --connection-name connections \
             --root-folder snowflake/migrations \
             --change-history-table "${SNOWFLAKE_DATABASE}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
