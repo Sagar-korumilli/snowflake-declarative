@@ -38,6 +38,7 @@ DESTRUCTIVE_PATTERNS = {
     ]
 }
 
+
 def parse_fully_qualified_name(name_str, default_db, default_schema):
     parts = name_str.upper().replace('"', '').split('.')
     if len(parts) == 3:
@@ -48,13 +49,19 @@ def parse_fully_qualified_name(name_str, default_db, default_schema):
         return (default_db, default_schema, parts[0])
     return (None, None, None)
 
+
 def validate_env_vars():
-    required = ['SNOWFLAKE_USER', 'SNOWFLAKE_PASSWORD', 'SNOWFLAKE_ACCOUNT',
-                'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE']
+    required = [
+        'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER',
+        'SNOWFLAKE_ROLE', 'SNOWFLAKE_WAREHOUSE',
+        'SNOWFLAKE_DATABASE', 'SNOWFLAKE_PRIVATE_KEY',
+        'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'
+    ]
     missing = [v for v in required if not os.environ.get(v)]
     if missing:
         print(f"❌ Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -87,7 +94,11 @@ def main():
                         object_domain = 'TABLE' if domain == 'ALTER_TABLE_DROP_COLUMN' else domain
                         unparsed_name = match.group(1)
 
-                        db, schema, name = parse_fully_qualified_name(unparsed_name, target_db.upper(), default_schema)
+                        db, schema, name = parse_fully_qualified_name(
+                            unparsed_name,
+                            target_db.upper(),
+                            default_schema
+                        )
                         if not all([db, schema, name]):
                             print(f"❌ Could not parse object: {unparsed_name} in file {fname}")
                             sys.exit(1)
@@ -101,11 +112,14 @@ def main():
 
     print(f"\n🔍 Step 2: Checking downstream dependencies for {len(impacted_objects)} object(s)...")
 
+    # Connect using key-pair auth
     try:
         ctx = snowflake.connector.connect(
-            user=os.environ['SNOWFLAKE_USER'],
-            password=os.environ['SNOWFLAKE_PASSWORD'],
             account=os.environ['SNOWFLAKE_ACCOUNT'],
+            user=os.environ['SNOWFLAKE_USER'],
+            authenticator='snowflake_jwt',
+            private_key_file='key.pem',
+            private_key_file_pwd=os.environ['SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'],
             warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
             role=os.environ['SNOWFLAKE_ROLE'],
             database=target_db
@@ -151,14 +165,12 @@ def main():
     cur.close()
     ctx.close()
 
-    dropped_keys = {f"{domain}.{db}.{schema}.{name}" for (domain, db, schema, name) in impacted_objects}
-    truly_blocking = []
-    for dep in blocking_dependencies:
-        dep_key = f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}"
-        if dep_key not in dropped_keys:
-            truly_blocking.append(dep)
+    dropped_keys = {f"{d}.{db}.{schema}.{name}" for (d, db, schema, name) in impacted_objects}
+    truly_blocking = [
+        dep for dep in blocking_dependencies
+        if f"{dep['dependent_domain']}.{dep['dependent_name'].upper()}" not in dropped_keys
+    ]
 
-    # Save report
     with open("blocking_dependencies.json", "w") as f:
         json.dump(truly_blocking, f, indent=2)
 
