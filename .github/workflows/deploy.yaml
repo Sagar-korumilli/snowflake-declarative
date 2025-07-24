@@ -1,4 +1,4 @@
-name: 🧪 Schemachange Dry‑Run
+name: 🧪 Schemachange Dry‑Run (Key‑Pair + connections.toml)
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 jobs:
   dry-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repo
@@ -20,10 +20,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install schemachange
+      - name: Install schemachange + connector
         run: |
           pip install --upgrade pip
-          pip install schemachange snowflake-connector-python
+          pip install schemachange==4.0.1 snowflake-connector-python
 
       - name: Validate env vars
         env:
@@ -31,58 +31,54 @@ jobs:
           SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE; do
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
             if [ -z "${!v}" ]; then
               echo "❌ Missing $v" && exit 1
             fi
           done
 
-      - name: Write private key
+      - name: Write private key file
         run: |
           echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
           chmod 600 key.pem
         env:
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
 
-      - name: Dry‑run setup folder
-        env:
-          SNOWFLAKE_ACCOUNT:             ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:    key.pem
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:           ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:            ${{ secrets.SNOWFLAKE_DATABASE }}
+      - name: Generate connections.toml
         run: |
-          schemachange \
+          cat > connections.toml <<EOF
+          [snowflake]
+          account             = "${SNOWFLAKE_ACCOUNT}"
+          user                = "${SNOWFLAKE_USER}"
+          private_key_file    = "key.pem"
+          private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+          role                = "${SNOWFLAKE_ROLE}"
+          warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+          database            = "${SNOWFLAKE_DATABASE}"
+          EOF
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+
+      - name: Dry‑run setup folder
+        run: |
+          schemachange deploy \
+            --connections-file connections.toml \
             --root-folder snowflake/setup \
-            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-            --snowflake-user "$SNOWFLAKE_USER" \
-            --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
-            --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
-            --snowflake-role "$SNOWFLAKE_ROLE" \
-            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-            --snowflake-database "$SNOWFLAKE_DATABASE" \
             --dry-run
+        # uses credentials from connections.toml and key.pem :contentReference[oaicite:0]{index=0}
 
       - name: Dry‑run migrations folder
-        env: # same env block as above
-          SNOWFLAKE_ACCOUNT:             ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY_PATH:    key.pem
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:           ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:            ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          schemachange \
+          schemachange deploy \
+            --connections-file connections.toml \
             --root-folder snowflake/migrations \
-            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
-            --snowflake-user "$SNOWFLAKE_USER" \
-            --private-key-path "$SNOWFLAKE_PRIVATE_KEY_PATH" \
-            --private-key-passphrase "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" \
-            --snowflake-role "$SNOWFLAKE_ROLE" \
-            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
-            --snowflake-database "$SNOWFLAKE_DATABASE" \
             --dry-run
