@@ -81,4 +81,5 @@ jobs:
           schemachange deploy \
             --connections-file connections.toml \
             --root-folder snowflake/migrations \
-            --dry-run
+            --dry-run 
+            --verbose
