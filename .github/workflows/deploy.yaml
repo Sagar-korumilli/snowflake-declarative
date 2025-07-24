@@ -1,6 +1,9 @@
 name: 🧪 Schemachange Dry‑Run
 
 on:
+  push:
+    branches:
+      - keypair
   workflow_dispatch:
 
 jobs:
