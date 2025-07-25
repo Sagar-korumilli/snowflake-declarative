@@ -116,6 +116,7 @@ jobs:
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/setup \
+              --file-filter "__${schema_name}__" \
               --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
               --create-change-history-table -v
           done
@@ -128,6 +129,7 @@ jobs:
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/migrations \
+              --file-filter "__${schema_name}__" \
               --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" -v
           done
 
@@ -142,6 +144,7 @@ jobs:
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/rollback \
+              --file-filter "__${schema_name}__" \
               --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
               --file-filter "$file" -v
           done
