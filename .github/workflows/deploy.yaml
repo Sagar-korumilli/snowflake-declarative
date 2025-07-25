@@ -116,7 +116,7 @@ jobs:
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/setup \
-              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
+              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
               --create-change-history-table -v
           done
 
@@ -128,8 +128,9 @@ jobs:
               --connections-file connections.toml \
               --connection-name connections \
               --root-folder snowflake/migrations \
-              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.PUBLIC.SCHEMA_CHANGE_HISTORY" -v
+              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" -v
           done
+
 
       - name: Run rollback on failure
         if: failure()
