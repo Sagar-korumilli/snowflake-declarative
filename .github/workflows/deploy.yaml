@@ -124,12 +124,7 @@ jobs:
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
       - name: Snapshot updated DDL baseline
         run: |
-          for d in snowflake/*; do
-            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
-              schema_name=$(basename "$d")
-              python scripts/backup_ddl.py $schema_name $d/V00*__*.sql
-            fi
-          done
+          python scripts/backup_ddl.py --snowflake-root snowflake/
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
