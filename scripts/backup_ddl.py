@@ -1,55 +1,99 @@
-import re
 import os
 import sys
-from datetime import datetime
 import snowflake.connector
+from pathlib import Path
 
-# 1. parse args: schema name, migration filename
-schema = sys.argv[1]          # e.g. "my_schema"
-migration_file = sys.argv[2]  # e.g. "V002__add_column_to_orders.sql"
+# Use your original environment variable names
+SNOWFLAKE_ACCOUNT    = os.getenv('SNOWFLAKE_ACCOUNT')
+SNOWFLAKE_USER       = os.getenv('SNOWFLAKE_USER')
+SNOWFLAKE_ROLE       = os.getenv('SNOWFLAKE_ROLE')
+SNOWFLAKE_WAREHOUSE  = os.getenv('SNOWFLAKE_WAREHOUSE')
+SNOWFLAKE_DATABASE   = os.getenv('SNOWFLAKE_DATABASE')
+SNOWFLAKE_PRIVATE_KEY           = os.getenv('SNOWFLAKE_PRIVATE_KEY')
+SNOWFLAKE_PRIVATE_KEY_PASSPHRASE= os.getenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE')
 
-# 2. scan migration for object names
-pattern = re.compile(r'(TABLE|VIEW)\s+(\w+\.\w+)', re.IGNORECASE)
-with open(migration_file) as f:
-    text = f.read()
-objects = {m.group(2) for m in pattern.finditer(text)}
+if not all([SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_ROLE, SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_PRIVATE_KEY]):
+    print("❌ Missing required Snowflake environment variables.")
+    sys.exit(1)
 
-# 3. connect to Snowflake & fetch current DDL
-ctx = snowflake.connector.connect(**{
-    'account': os.environ['SF_ACCOUNT'],
-    'user':    os.environ['SF_USER'],
-    'password':os.environ['SF_PWD'],
-    'role':    os.environ['SF_ROLE'],
-    'warehouse':os.environ['SF_WH'],
-    'database':os.environ['SF_DB'],
-})
-cur = ctx.cursor()
-ddl_map = {}
-for obj in objects:
-    obj_type = "TABLE" if ".TABLE." not in obj.upper() else "VIEW"
-    cur.execute(f"SHOW CREATE {obj_type} {obj}")
-    ddl_map[obj] = cur.fetchone()[1]  # the CREATE statement
+import base64
+import tempfile
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
-# 4. read initial setup into memory
-initial_path = os.path.join(os.path.dirname(migration_file), 'V001__initial_setup.sql')
-with open(initial_path) as f:
-    base = f.read()
+def load_private_key():
+    key_bytes = SNOWFLAKE_PRIVATE_KEY.encode()
+    private_key = serialization.load_pem_private_key(
+        key_bytes,
+        password=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE.encode() if SNOWFLAKE_PRIVATE_KEY_PASSPHRASE else None,
+        backend=default_backend()
+    )
+    return private_key
 
-# 5. replace each block between your markers
-for obj, create_ddl in ddl_map.items():
-    name = obj.split('.')[-1]
-    begin = re.escape(f"-- ### BEGIN {name}")
-    end   = re.escape(f"-- ### END {name}")
-    block_re = re.compile(begin + r'.*?' + end, re.DOTALL)
-    new_block = f"-- ### BEGIN {name}\n{create_ddl.strip()}\n-- ### END {name}"
-    base = block_re.sub(new_block, base)
+def get_connection():
+    private_key = load_private_key()
+    pkb = private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    return snowflake.connector.connect(
+        user=SNOWFLAKE_USER,
+        account=SNOWFLAKE_ACCOUNT,
+        private_key=pkb,
+        role=SNOWFLAKE_ROLE,
+        warehouse=SNOWFLAKE_WAREHOUSE,
+        database=SNOWFLAKE_DATABASE
+    )
 
-# 6. write out to backup folder
-ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-backup_dir = os.path.join(os.path.dirname(initial_path), 'backup')
-os.makedirs(backup_dir, exist_ok=True)
-out_path = os.path.join(backup_dir, f"V001__initial_setup_backup_{ts}.sql")
-with open(out_path, 'w') as f:
-    f.write(base)
+def fetch_ddl(conn, schema_name):
+    ddl_map = {}
+    query = f"""
+    SELECT OBJECT_NAME, OBJECT_TYPE
+    FROM {SNOWFLAKE_DATABASE}.INFORMATION_SCHEMA.OBJECTS
+    WHERE OBJECT_SCHEMA = '{schema_name}'
+      AND OBJECT_TYPE IN ('TABLE', 'VIEW', 'SEQUENCE')
+    ORDER BY OBJECT_NAME
+    """
+    cur = conn.cursor()
+    cur.execute(f'USE SCHEMA {SNOWFLAKE_DATABASE}.{schema_name}')
+    cur.execute(query)
+    for obj_name, obj_type in cur.fetchall():
+        ddl_cur = conn.cursor()
+        ddl_cur.execute(f"SHOW {obj_type}s LIKE '{obj_name}' IN SCHEMA {SNOWFLAKE_DATABASE}.{schema_name}")
+        show_result = ddl_cur.fetchone()
+        if show_result:
+            ddl = show_result[-1]
+            ddl_map[(obj_type, obj_name)] = ddl
+    return ddl_map
 
-print(f"Written updated baseline to {out_path}")
+def write_backup(schema: str, original_file: str, ddl_map: dict):
+    orig_path = Path(original_file)
+    backup_dir = orig_path.parent / 'backup'
+    backup_dir.mkdir(exist_ok=True)
+    backup_file = backup_dir / orig_path.name
+
+    with open(backup_file, 'w') as f:
+        for (obj_type, obj_name), ddl in sorted(ddl_map.items()):
+            f.write(f"-- {obj_type}: {obj_name}\n{ddl};\n\n")
+    print(f"✅ DDL snapshot written to: {backup_file}")
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python backup_ddl.py <schema_name> <initial_file.sql>")
+        sys.exit(1)
+
+    schema = sys.argv[1]
+    initial_file = sys.argv[2]
+
+    if not Path(initial_file).exists():
+        print(f"❌ Initial file not found: {initial_file}")
+        sys.exit(1)
+
+    print(f"📸 Taking DDL snapshot of schema: {schema}")
+    conn = get_connection()
+    ddl_map = fetch_ddl(conn, schema)
+    write_backup(schema, initial_file, ddl_map)
+
+if __name__ == '__main__':
+    main()
