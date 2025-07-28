@@ -99,56 +99,48 @@ jobs:
         run: |
           python scripts/clone_tables.py --migrations-folder snowflake/migrations
 
-      - name: Get all unique schemas from setup and migrations folders
-        id: get-schemas
+      - name: Deploy versioned migrations
         run: |
-          SETUP_SCHEMAS=$(find snowflake/setup -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
-          MIGRATION_SCHEMAS=$(find snowflake/migrations -maxdepth 1 -type f -name '*.sql' -printf "%f\n" | awk -F '__' '{print $2}' | sort -u)
-          ALL_SCHEMAS=$(echo "$SETUP_SCHEMAS $MIGRATION_SCHEMAS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-          echo "ALL_SCHEMAS=${ALL_SCHEMAS}" >> $GITHUB_OUTPUT
-          echo "CURRENT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          for d in snowflake/*; do
+            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
+              schema_name=$(basename "$d")
 
-      - name: Bootstrap schemas (Initial Setup or New Schema Deployment)
-        if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
-        run: |
-          for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            schemachange deploy \
-              --connections-file connections.toml \
-              --connection-name connections \
-              --root-folder snowflake/setup \
-              --file-filter "__${schema_name}__" \
-              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
-              --create-change-history-table -v
+              # Deploy all versioned SQL files
+              schemachange deploy \
+                --connections-file connections.toml \
+                --connection-name connections \
+                --root-folder $d \
+                --file-filter "^V[0-9]+" \
+                --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
+                --create-change-history-table -v
+            fi
           done
-
-      - name: Apply incremental migrations
-        if: steps.get-schemas.outputs.ALL_SCHEMAS != ''
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+      - name: Snapshot updated DDL baseline
         run: |
-          for schema_name in ${{ steps.get-schemas.outputs.ALL_SCHEMAS }}; do
-            schemachange deploy \
-              --connections-file connections.toml \
-              --connection-name connections \
-              --root-folder snowflake/migrations \
-              --file-filter "__${schema_name}__" \
-              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" -v
+          for d in snowflake/*; do
+            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
+              schema_name=$(basename "$d")
+              python scripts/backup_ddl.py $schema_name $d/V00*__*.sql
+            fi
           done
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
 
 
-      - name: Run rollback on failure
-        if: failure()
-        run: |
-          echo "❌ Deployment failed. Running rollback..."
-          for file in snowflake/rollback/*.sql; do
-            echo "🌀 Executing rollback: $file"
-            schemachange deploy \
-              --connections-file connections.toml \
-              --connection-name connections \
-              --root-folder snowflake/rollback \
-              --file-filter "__${schema_name}__" \
-              --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.PUBLIC.SCHEMA_CHANGE_HISTORY" \
-              --file-filter "$file" -v
-          done
 
       - name: Nothing to do
-        if: steps.get-schemas.outputs.ALL_SCHEMAS == ''
-        run: echo "✔️ No schema files found. Skipping deployment."
+        run: echo "✔️ Completed Snowflake deploy for all schema folders under snowflake/."
