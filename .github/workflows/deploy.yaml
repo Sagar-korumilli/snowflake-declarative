@@ -3,7 +3,7 @@ name: ❄️ Snowflake Full Deploy
 on:
   push:
     branches:
-      - keypair
+      - schema-level
   workflow_dispatch:
 
 jobs:
@@ -74,7 +74,7 @@ jobs:
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
 
       - name: Validate for risky SQL
-        run: python scripts/sql_risk_validator.py
+        run: python scripts/sql_risk_validator.py --snowflake-root snowflake
 
       - name: Check object dependencies
         env:
@@ -85,7 +85,7 @@ jobs:
           SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: python scripts/dependency_checker.py
+        run: python scripts/dependency_checker.py --snowflake-root snowflake
 
       - name: Backup tables using zero-copy
         env:
@@ -97,7 +97,7 @@ jobs:
           SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
-          python scripts/clone_tables.py --migrations-folder snowflake/migrations
+          python scripts/clone_tables.py --snowflake-root snowflake
 
       - name: Deploy versioned migrations
         run: |
@@ -110,7 +110,6 @@ jobs:
                 --connections-file connections.toml \
                 --connection-name connections \
                 --root-folder $d \
-                --file-filter "^V[0-9]+" \
                 --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
                 --create-change-history-table -v
             fi
