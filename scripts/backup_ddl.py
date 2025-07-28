@@ -28,7 +28,7 @@ def get_snowflake_connection():
         key_path = key_file.name
     os.chmod(key_path, 0o600)
 
-    conn = snowflake.connector.connector.connect(
+    conn = snowflake.connector.connect(
         account=SNOWFLAKE_ACCOUNT,
         user=SNOWFLAKE_USER,
         role=SNOWFLAKE_ROLE,
