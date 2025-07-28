@@ -25,9 +25,6 @@ if not Path(setup_file).exists():
     print(f"❌ Setup file not found: {setup_file}")
     sys.exit(1)
 
-print(f"🛠️  Processing schema: {schema_name}")
-print(f"📄 Setup file: {setup_file}")
-
 # Write private key to file
 key_path = "key.pem"
 with open(key_path, "w") as key_file:
@@ -52,7 +49,7 @@ def get_current_ddl(object_type, object_name):
         cursor.execute(f"SHOW {object_type}S IN SCHEMA {schema_name}")
         rows = cursor.fetchall()
         for row in rows:
-            if row[1].upper() == object_name.upper():
+            if row[1].upper() == object_name.upper():  # name match
                 cursor.execute(f"SELECT GET_DDL('{object_type}', '{schema_name}.{object_name}', true)")
                 return cursor.fetchone()[0]
     except Exception as e:
@@ -66,13 +63,13 @@ def find_altered_objects(sql_text):
 with open(setup_file, 'r') as f:
     setup_contents = f.read()
 
+# Read all SQL files in the folder except the main setup file
 schema_folder = str(Path(setup_file).parent)
 sql_files = sorted(Path(schema_folder).glob("*.sql"))
 sql_files = [f for f in sql_files if f.name != Path(setup_file).name]
 
 all_alters = []
 for sql_file in sql_files:
-    print(f"🔍 Checking SQL file: {sql_file.name}")
     with open(sql_file) as f:
         sql = f.read()
     alters = find_altered_objects(sql)
@@ -85,7 +82,7 @@ if not all_alters:
     conn.close()
     sys.exit(0)
 
-# Create backup folder and save backup
+# Backup original setup
 backup_folder = Path(schema_folder) / "backup"
 backup_folder.mkdir(exist_ok=True)
 backup_path = backup_folder / Path(setup_file).name
@@ -93,7 +90,14 @@ with open(backup_path, "w") as f:
     f.write(setup_contents)
 print(f"🗂️  Backup created at: {backup_path}")
 
-# Update setup file with current DDL
+# Print contents of the backup SQL file
+print("\n📄 Contents of backup file:")
+print("────────────────────────────────────────────────────")
+with open(backup_path, "r") as f:
+    print(f.read())
+print("────────────────────────────────────────────────────\n")
+
+# Replace DDL blocks
 modified = False
 for obj_type_raw, schema, obj_name in all_alters:
     obj_type = obj_type_raw.upper().replace(" ", "_")
@@ -113,6 +117,7 @@ for obj_type_raw, schema, obj_name in all_alters:
     else:
         print(f"⚠️ Could not update {obj_type} {obj_name}, not found in setup file.")
 
+# Save updated setup file
 if modified:
     with open(setup_file, "w") as f:
         f.write(setup_contents)
