@@ -1,12 +1,11 @@
 import os
-import sys
 import re
-import snowflake.connector
+import sys
+import shutil
 from pathlib import Path
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
+from snowflake.connector import connect
 
-# Load Snowflake credentials from environment variables
+# --- Snowflake credentials from environment variables (user-defined names) ---
 SNOWFLAKE_ACCOUNT     = os.getenv('SNOWFLAKE_ACCOUNT')
 SNOWFLAKE_USER        = os.getenv('SNOWFLAKE_USER')
 SNOWFLAKE_ROLE        = os.getenv('SNOWFLAKE_ROLE')
@@ -15,118 +14,103 @@ SNOWFLAKE_DATABASE    = os.getenv('SNOWFLAKE_DATABASE')
 SNOWFLAKE_PRIVATE_KEY = os.getenv('SNOWFLAKE_PRIVATE_KEY')
 SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = os.getenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE')
 
-# Validate environment
-if not all([SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_ROLE,
-            SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE, SNOWFLAKE_PRIVATE_KEY]):
-    print("❌ Missing required Snowflake environment variables.")
-    sys.exit(1)
+if not all([SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_ROLE, SNOWFLAKE_WAREHOUSE,
+            SNOWFLAKE_DATABASE, SNOWFLAKE_PRIVATE_KEY, SNOWFLAKE_PRIVATE_KEY_PASSPHRASE]):
+    sys.exit("❌ Missing required Snowflake credentials.")
 
-def load_private_key():
-    key_bytes = SNOWFLAKE_PRIVATE_KEY.encode()
-    return serialization.load_pem_private_key(
-        key_bytes,
-        password=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE.encode() if SNOWFLAKE_PRIVATE_KEY_PASSPHRASE else None,
-        backend=default_backend()
-    )
-
+# --- Connect to Snowflake ---
 def get_connection():
-    pk = load_private_key().private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    return snowflake.connector.connect(
+    return connect(
         user=SNOWFLAKE_USER,
         account=SNOWFLAKE_ACCOUNT,
-        private_key=pk,
-        role=SNOWFLAKE_ROLE,
+        private_key=SNOWFLAKE_PRIVATE_KEY.encode(),
+        private_key_passphrase=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
         warehouse=SNOWFLAKE_WAREHOUSE,
-        database=SNOWFLAKE_DATABASE
+        database=SNOWFLAKE_DATABASE,
+        role=SNOWFLAKE_ROLE
     )
 
-def parse_altered_objects(file_path):
-    altered = []
-    with open(file_path, 'r') as f:
-        for line in f:
-            match = re.match(r'ALTER\s+(TABLE|VIEW|SEQUENCE)\s+(?:IF EXISTS\s+)?(?:[\w]+\.)?([\w]+)', line.strip(), re.IGNORECASE)
-            if match:
-                altered.append((match.group(1).upper(), match.group(2).upper()))
-    return altered
+# --- Read current setup DDL ---
+def load_setup_file(setup_path):
+    if not setup_path.exists():
+        print(f"⚠️ Setup file not found: {setup_path}")
+        return None
+    return setup_path.read_text()
 
-def fetch_object_ddl(conn, schema, obj_type, obj_name):
-    cursor = conn.cursor()
-    obj_type_upper = obj_type.upper()
-    cursor.execute(f"SHOW {obj_type_upper}s LIKE '{obj_name}' IN SCHEMA {SNOWFLAKE_DATABASE}.{schema}")
-    row = cursor.fetchone()
-    return row[-1] if row else None
-
-def update_setup_file(setup_file, altered_ddls):
-    with open(setup_file, 'r') as f:
+# --- Extract all object names from ALTER SQL files ---
+def extract_object_names(sql_path):
+    with open(sql_path) as f:
         content = f.read()
+    matches = re.findall(r'ALTER\s+(TABLE|VIEW|SEQUENCE|FILE FORMAT)\s+(\w+)\.(\w+)', content, re.IGNORECASE)
+    return set((m[0].upper(), m[1].upper(), m[2].upper()) for m in matches)
 
-    for (obj_type, obj_name), new_ddl in altered_ddls.items():
-        # Pattern to find the old definition
-        pattern = rf'--\s*{obj_type}:\s*{obj_name}\s*\n.*?(?=\n--|$)'
-        new_block = f"-- {obj_type}: {obj_name}\n{new_ddl};"
-        content, count = re.subn(pattern, new_block, content, flags=re.DOTALL | re.IGNORECASE)
-        if count == 0:
-            print(f"⚠️ Could not update {obj_type} {obj_name}, not found in setup file.")
+# --- Get DDL from Snowflake ---
+def fetch_current_ddl(conn, obj_type, schema, name):
+    full_name = f"{schema}.{name}"
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SHOW {obj_type}s IN SCHEMA {schema}")
+        for row in cur:
+            if row[1].upper() == name.upper():
+                cur.execute(f"SELECT GET_DDL('{obj_type}', '{full_name}', TRUE)")
+                return cur.fetchone()[0]
+    finally:
+        cur.close()
+    return None
 
-    with open(setup_file, 'w') as f:
-        f.write(content)
+# --- Replace object DDL in setup file ---
+def replace_ddl(original_text, ddl):
+    obj_name = re.search(r'CREATE\s+OR\s+REPLACE\s+(TABLE|VIEW|SEQUENCE|FILE FORMAT)\s+(\w+\.\w+)', ddl, re.IGNORECASE)
+    if not obj_name:
+        return original_text, False
+    pattern = re.compile(
+        rf'(CREATE\s+OR\s+REPLACE\s+{obj_name.group(1)}\s+{obj_name.group(2)}.*?;)', re.DOTALL | re.IGNORECASE
+    )
+    if pattern.search(original_text):
+        updated_text = pattern.sub(ddl.strip() + ';', original_text)
+        return updated_text, True
+    return original_text, False
 
-def backup_file(setup_file):
-    backup_dir = Path(setup_file).parent / 'backup'
-    backup_dir.mkdir(exist_ok=True)
-    backup_path = backup_dir / Path(setup_file).name
-    with open(setup_file, 'r') as src, open(backup_path, 'w') as dst:
-        dst.write(src.read())
-    print(f"🗂️  Backup created at: {backup_path}")
-
-def main():
+# --- Main ---
+if __name__ == '__main__':
     if len(sys.argv) < 3:
-        print("Usage: python backup_ddl.py <schema_name> <file1.sql> [<file2.sql> ...]")
+        sys.exit("Usage: python backup_ddl.py <schema_name> <setup_file>")
+
+    schema = sys.argv[1].upper()
+    setup_file = Path(sys.argv[2])
+    folder = setup_file.parent
+    backup_dir = folder / "backup"
+    backup_dir.mkdir(exist_ok=True)
+
+    ddl_before = load_setup_file(setup_file)
+    if ddl_before is None:
         sys.exit(1)
-
-    schema = sys.argv[1]
-    sql_files = sys.argv[2:]
-    setup_file = next((f for f in sql_files if Path(f).name.startswith("V001__")), None)
-    if not setup_file or not Path(setup_file).exists():
-        print("❌ Full setup file (V001__*.sql) not found.")
-        sys.exit(1)
-
-    other_files = [f for f in sql_files if f != setup_file]
-    if not other_files:
-        print("✅ No new SQL files; skipping backup.")
-        sys.exit(0)
-
-    altered_objects = {}
-    for file in other_files:
-        altered_objects.update({obj: None for obj in parse_altered_objects(file)})
-
-    if not altered_objects:
-        print("✅ No ALTER statements found; skipping setup update.")
-        sys.exit(0)
-
-    print(f"📸 Taking DDL snapshot for schema '{schema}' from ALTER statements...")
 
     conn = get_connection()
-    conn.cursor().execute(f"USE SCHEMA {SNOWFLAKE_DATABASE}.{schema}")
+    altered_objects = set()
+    for sql_file in sorted(folder.glob("V[1-9]*__*.sql")):
+        altered_objects |= extract_object_names(sql_file)
 
-    altered_ddls = {}
-    for obj_type, obj_name in altered_objects:
-        ddl = fetch_object_ddl(conn, schema, obj_type, obj_name)
+    print(f"📸 Taking DDL snapshot for schema '{schema}' from ALTER statements...")
+    updated_ddl = ddl_before
+    modified = False
+
+    for obj_type, obj_schema, obj_name in altered_objects:
+        ddl = fetch_current_ddl(conn, obj_type, obj_schema, obj_name)
         if ddl:
-            altered_ddls[(obj_type, obj_name)] = ddl
+            updated_ddl, changed = replace_ddl(updated_ddl, ddl)
+            if changed:
+                modified = True
+            else:
+                print(f"⚠️ Could not update {obj_type} {obj_name}, not found in setup file.")
         else:
-            print(f"⚠️ DDL not found for {obj_type} {obj_name}.")
+            print(f"⚠️ Could not fetch DDL for {obj_type} {obj_name}")
 
-    if altered_ddls:
-        backup_file(setup_file)
-        update_setup_file(setup_file, altered_ddls)
+    if modified:
+        backup_path = backup_dir / setup_file.name
+        shutil.copy2(setup_file, backup_path)
+        print(f"🗂️  Backup created at: {backup_path}")
+        setup_file.write_text(updated_ddl)
         print(f"✅ Setup file updated: {setup_file}")
     else:
-        print("⚠️ No valid DDL fetched; setup not updated.")
-
-if __name__ == '__main__':
-    main()
+        print("✅ No new SQL files; skipping backup.")
