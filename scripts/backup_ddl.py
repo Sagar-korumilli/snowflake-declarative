@@ -1,107 +1,115 @@
+import argparse
 import os
 import re
 import sys
+from datetime import datetime
+from pathlib import Path
 import snowflake.connector
+from git import Repo
 
-SCHEMA = sys.argv[1]
-FULL_SETUP_FILE = sys.argv[2]
-NEW_SQL_FILES = sys.argv[3:]
+parser = argparse.ArgumentParser()
+parser.add_argument('--snowflake-root', required=True, help="Root folder containing schema subfolders")
+args = parser.parse_args()
 
-# Connect to Snowflake
-conn = snowflake.connector.connect(
-    account=os.environ['SNOWFLAKE_ACCOUNT'],
-    user=os.environ['SNOWFLAKE_USER'],
-    private_key_file=os.environ['SNOWFLAKE_PRIVATE_KEY'],
-    private_key_file_pwd=os.environ['SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'],
-    warehouse=os.environ['SNOWFLAKE_WAREHOUSE'],
-    role=os.environ['SNOWFLAKE_ROLE'],
-    database=os.environ['SNOWFLAKE_DATABASE'],
-    schema=SCHEMA
-)
-cursor = conn.cursor()
+# Env vars (do not rename)
+SNOWFLAKE_ACCOUNT = os.getenv('SNOWFLAKE_ACCOUNT')
+SNOWFLAKE_USER = os.getenv('SNOWFLAKE_USER')
+SNOWFLAKE_ROLE = os.getenv('SNOWFLAKE_ROLE')
+SNOWFLAKE_WAREHOUSE = os.getenv('SNOWFLAKE_WAREHOUSE')
+SNOWFLAKE_DATABASE = os.getenv('SNOWFLAKE_DATABASE')
+SNOWFLAKE_PRIVATE_KEY = os.getenv('SNOWFLAKE_PRIVATE_KEY')
+SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = os.getenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE')
 
-def get_object_type(sql_line):
-    # Detect object type and name from SQL
-    patterns = [
-        (r'ALTER\s+TABLE\s+(\w+)', 'TABLE'),
-        (r'CREATE\s+OR\s+REPLACE\s+VIEW\s+(\w+)', 'VIEW'),
-        (r'CREATE\s+OR\s+REPLACE\s+SEQUENCE\s+(\w+)', 'SEQUENCE'),
-        (r'CREATE\s+OR\s+REPLACE\s+FILE\s+FORMAT\s+(\w+)', 'FILE FORMAT'),
-        (r'CREATE\s+OR\s+REPLACE\s+STAGE\s+(\w+)', 'STAGE')
+for var in [
+    'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER', 'SNOWFLAKE_ROLE',
+    'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_DATABASE',
+    'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE']:
+    if not globals().get(var):
+        raise RuntimeError(f"❌ Missing environment variable: {var}")
+
+# Get changed SQL files
+repo = Repo('.')
+commit = repo.head.commit
+parents = commit.parents
+
+if not parents:
+    print("🟡 Initial commit — all .sql files considered.")
+    changed_files = [
+        os.path.join(dp, f)
+        for dp, _, filenames in os.walk(args.snowflake_root)
+        if "backup" not in dp
+        for f in filenames if f.endswith('.sql')
     ]
-    for pattern, obj_type in patterns:
-        match = re.search(pattern, sql_line, re.IGNORECASE)
-        if match:
-            return obj_type, match.group(1)
-    return None, None
+else:
+    diff = commit.diff(parents[0])
+    changed_files = [
+        d.b_path for d in diff
+        if d.b_path and d.b_path.endswith('.sql') and args.snowflake_root in d.b_path and '/backup/' not in d.b_path
+    ]
 
-def fetch_ddl(object_type, object_name):
+if not changed_files:
+    print("✅ No changed SQL files; skipping backups.")
+    sys.exit(0)
+
+print("🔍 Changed SQL files:", changed_files)
+
+# Write key to disk
+with open('key.pem', 'w') as f:
+    f.write(SNOWFLAKE_PRIVATE_KEY)
+os.chmod('key.pem', 0o600)
+
+conn = snowflake.connector.connect(
+    account=SNOWFLAKE_ACCOUNT,
+    user=SNOWFLAKE_USER,
+    role=SNOWFLAKE_ROLE,
+    warehouse=SNOWFLAKE_WAREHOUSE,
+    database=SNOWFLAKE_DATABASE,
+    private_key_file='key.pem',
+    private_key_file_pwd=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
+    authenticator='snowflake_jwt'
+)
+
+cur = conn.cursor()
+
+def get_current_ddl(object_type, full_name):
     try:
-        ddl_type = object_type if object_type != 'FILE FORMAT' else 'FILE FORMAT'
-        qualified = f"{SCHEMA}.{object_name}"
-        cursor.execute(f"SELECT GET_DDL('{ddl_type}', '{qualified}', TRUE)")
-        return cursor.fetchone()[0]
+        cur.execute(f"SELECT GET_DDL('{object_type}', '{full_name}', true)")
+        return cur.fetchone()[0]
     except Exception as e:
-        print(f"❌ Failed to get DDL for {object_type} {qualified}: {e}")
+        print(f"⚠️ Failed to fetch DDL for {object_type} {full_name}: {e}")
         return None
 
-def replace_object_ddl(content, object_type, object_name, new_ddl):
-    # Replace existing DDL block in content with the new DDL
-    obj_regex_map = {
-        'TABLE': rf'CREATE\s+(OR\s+REPLACE\s+)?TABLE\s+{SCHEMA}\.{object_name}\s*\(.*?\);',
-        'VIEW': rf'CREATE\s+(OR\s+REPLACE\s+)?VIEW\s+{SCHEMA}\.{object_name}\s+AS\s+.*?;',
-        'SEQUENCE': rf'CREATE\s+(OR\s+REPLACE\s+)?SEQUENCE\s+{SCHEMA}\.{object_name}.*?;',
-        'FILE FORMAT': rf'CREATE\s+(OR\s+REPLACE\s+)?FILE\s+FORMAT\s+{SCHEMA}\.{object_name}.*?;',
-        'STAGE': rf'CREATE\s+(OR\s+REPLACE\s+)?STAGE\s+{SCHEMA}\.{object_name}.*?;'
-    }
+def replace_object(original_sql, object_type, object_name, new_ddl):
+    pattern = re.compile(rf"CREATE(?:\s+OR\s+REPLACE)?\s+{object_type}\s+{re.escape(object_name)}.*?;", re.IGNORECASE | re.DOTALL)
+    return pattern.sub(new_ddl.strip() + ';', original_sql)
 
-    pattern = re.compile(obj_regex_map[object_type], re.IGNORECASE | re.DOTALL)
-    new_ddl = new_ddl.strip()
-    updated, count = pattern.subn(new_ddl, content)
+for file in changed_files:
+    sql = Path(file).read_text()
+    schema = Path(file).parts[1]
+    backup_dir = Path(file).parent / 'backup'
+    backup_dir.mkdir(exist_ok=True)
+    backup_file = backup_dir / Path(file).name
+    
+    modified_sql = sql
 
-    if count:
-        print(f"✅ Updated {object_type} {object_name}")
-    else:
-        print(f"⚠️ Could not find {object_type} {object_name} in setup file to replace")
+    # Only ALTER TABLEs trigger table GET_DDL + replacement
+    table_alters = re.findall(r'ALTER TABLE (\w+)\.(\w+)', sql, re.IGNORECASE)
+    for sch, tbl in table_alters:
+        full = f"{sch}.{tbl}"
+        ddl = get_current_ddl("TABLE", full)
+        if ddl:
+            modified_sql = replace_object(modified_sql, "TABLE", full, ddl)
 
-    return updated
+    # CREATE OR REPLACE (VIEW, SEQUENCE, FILE FORMAT, STAGE, etc.)
+    creates = re.findall(r'CREATE\s+OR\s+REPLACE\s+(VIEW|SEQUENCE|FILE FORMAT|STAGE)\s+(\w+)\.(\w+)', sql, re.IGNORECASE)
+    for obj_type, sch, name in creates:
+        full = f"{sch}.{name}"
+        ddl = get_current_ddl(obj_type.upper(), full)
+        if ddl:
+            modified_sql = replace_object(modified_sql, obj_type.upper(), full, ddl)
 
-def ensure_backup_dir(path):
-    backup_dir = os.path.join(os.path.dirname(path), 'backup')
-    os.makedirs(backup_dir, exist_ok=True)
-    return os.path.join(backup_dir, os.path.basename(path))
+    backup_file.write_text(modified_sql)
+    print(f"✅ Backup created at {backup_file}")
 
-if not os.path.exists(FULL_SETUP_FILE):
-    print(f"❌ Full setup file does not exist: {FULL_SETUP_FILE}")
-    sys.exit(1)
-
-with open(FULL_SETUP_FILE, 'r') as f:
-    original_content = f.read()
-
-new_content = original_content
-
-for sql_file in NEW_SQL_FILES:
-    if not os.path.exists(sql_file):
-        continue
-
-    print(f"📸 Taking DDL snapshot for schema '{SCHEMA}' from ALTER statements in {os.path.basename(sql_file)}...")
-
-    with open(sql_file, 'r') as f:
-        for line in f:
-            object_type, object_name = get_object_type(line)
-            if not object_type or not object_name:
-                continue
-            ddl = fetch_ddl(object_type, object_name)
-            if ddl:
-                new_content = replace_object_ddl(new_content, object_type, object_name, ddl)
-
-# Write to backup file
-backup_path = ensure_backup_dir(FULL_SETUP_FILE)
-with open(backup_path, 'w') as f:
-    f.write(new_content)
-
-print(f"🗂️  Backup created at: {backup_path}")
-print("✅ Setup file updated:", os.path.basename(FULL_SETUP_FILE))
-
-cursor.close()
+cur.close()
 conn.close()
