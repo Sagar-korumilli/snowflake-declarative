@@ -10,11 +10,18 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    
+    # Add these permissions - this is crucial for the fix
+    permissions:
+      contents: write        # Required to push changes back to repo
+      pull-requests: write   # Optional: if you need PR operations
+      actions: read         # Required for workflow operations
+    
     env:
-      # your Git identity (used by backup_ddl.py)
+      # Git identity (used by backup_ddl.py)
       GIT_USER_NAME:    "Sagar-korumilli"
       GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-      # your PAT (hard‑coded here as requested; consider moving to secrets later)
+      # Keep your PAT for testing (remove later once confirmed working)
       GIT_PUSH_TOKEN:   "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"
 
     steps:
@@ -22,7 +29,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
+          # Use your PAT for checkout as well
+          token: "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"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -140,5 +148,8 @@ jobs:
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/backup_ddl.py --snowflake-root snowflake/
 
-      - name: Nothing to do
-        run: echo "✔️ Completed Snowflake deploy for all schema folders under snowflake/."
+      - name: Clean up temporary files
+        if: always()
+        run: |
+          rm -f key.pem connections.toml
+          echo "✔️ Completed Snowflake deploy for all schema folders under snowflake/."
