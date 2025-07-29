@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     
-    # Add these permissions - this is crucial for the fix
+    # Add these permissions - this is crucial
     permissions:
       contents: write        # Required to push changes back to repo
       pull-requests: write   # Optional: if you need PR operations
@@ -21,7 +21,7 @@ jobs:
       # Git identity (used by backup_ddl.py)
       GIT_USER_NAME:    "Sagar-korumilli"
       GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-      # Keep your PAT for testing (remove later once confirmed working)
+      # Your PAT for testing
       GIT_PUSH_TOKEN:   "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"
 
     steps:
@@ -29,8 +29,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use your PAT for checkout as well
+          # Use the PAT directly here instead of the token parameter
           token: "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"
+          persist-credentials: true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
