@@ -6,46 +6,59 @@ on:
 
 jobs:
   cherry-pick:
-    if: github.event.issue.pull_request != null && contains(github.event.commebt.body, 'cherry-pick:')
+    if: |
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, 'cherry-pick:')
     runs-on: ubuntu-latest
+
     steps:
-      - name: checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
         with:
-            fetch-depth: 0
+          fetch-depth: 0
+
       - name: Set up Git
         run: |
-          git config user.name "Github Actions"
+          git config user.name "github-actions"
           git config user.email "actions@github.com"
-      - name: Get PR target branch
-        id: get_branch
-        run: |
-          echo "TARGET_BRANCH=${{ github.event.issue.pull_request.url }}" >> $GITHUB_ENV
-      - name: Fetch PR details
+
+      - name: Get PR info
         id: pr
-        uses: octokit/request-action@v2.x
+        uses: actions/github-script@v7
         with:
-          route: GET /repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-      - name: checkout target branch
+          script: |
+            const prNumber = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput('target_branch', pr.base.ref);
+
+      - name: Checkout target branch
         run: |
-          TARGET_BRANCH=$(echo '${{ steps.pr.outputs.data }}' | jq -r '.base.ref')
-          echo "Target branch is $TARGET_BRANCH"
-          git fetch origin $TARGET_BRANCH"
-          git checkout $TARGET_BRANCH
+          git fetch origin ${{ steps.pr.outputs.target_branch }}
+          git checkout ${{ steps.pr.outputs.target_branch }}
+
       - name: Extract commit hashes from comment
         id: extract
         run: |
-          echo "${{ github.event.comment.body }}" | grep -oP (? <=Cherry-pick: ).*' | tr -d ' ' | tr ',' '\n' > commits.txt
+          # Extract the cherry-pick list
+          COMMITS=$(echo "${{ github.event.comment.body }}" | grep -oP '(?i)(?<=cherry-pick:).*' | tr -d ' ' | tr ',' '\n' | grep -E '^[0-9a-f]+$')
+          echo "$COMMITS" > commits.txt
           echo "Commits to cherry-pick:"
           cat commits.txt
+
       - name: Cherry-pick commits
         run: |
+          set -e
           while read commit; do
+            [ -z "$commit" ] && continue
             echo "Cherry-picking $commit"
             git cherry-pick $commit || exit 1
           done < commits.txt
+
       - name: Push changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git push origin HEAD
