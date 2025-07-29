@@ -1,0 +1,51 @@
+name: Selective cherry-pick on PR
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  cherry-pick:
+    if: github.event.issue.pull_request != null && contains(github.event.commebt.body, 'cherry-pick:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v3
+        with:
+            fetch-depth: 0
+      - name: Set up Git
+        run: |
+          git config user.name "Github Actions"
+          git config user.email "actions@github.com"
+      - name: Get PR target branch
+        id: get_branch
+        run: |
+          echo "TARGET_BRANCH=${{ github.event.issue.pull_request.url }}" >> $GITHUB_ENV
+      - name: Fetch PR details
+        id: pr
+        uses: octokit/request-action@v2.x
+        with:
+          route: GET /repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      - name: checkout target branch
+        run: |
+          TARGET_BRANCH=$(echo '${{ steps.pr.outputs.data }}' | jq -r '.base.ref')
+          echo "Target branch is $TARGET_BRANCH"
+          git fetch origin $TARGET_BRANCH"
+          git checkout $TARGET_BRANCH
+      - name: Extract commit hashes from comment
+        id: extract
+        run: |
+          echo "${{ github.event.comment.body }}" | grep -oP (? <=Cherry-pick: ).*' | tr -d ' ' | tr ',' '\n' > commits.txt
+          echo "Commits to cherry-pick:"
+          cat commits.txt
+      - name: Cherry-pick commits
+        run: |
+          while read commit; do
+            echo "Cherry-picking $commit"
+            git cherry-pick $commit || exit 1
+          done < commits.txt
+      - name: Push changes
+        run: |
+          git push origin HEAD
