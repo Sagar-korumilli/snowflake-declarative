@@ -126,6 +126,10 @@ jobs:
         run: |
           python scripts/backup_ddl.py --snowflake-root snowflake/
         env:
+          
+          GIT_USER_NAME:  "Sagar-korumilli"
+          GIT_USER_EMAIL: "sagar.korumilli11@gmail.com"
+          GIT_PUSH_TOKEN: "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"
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
