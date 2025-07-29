@@ -21,7 +21,6 @@ jobs:
       # Git identity (used by backup_ddl.py)
       GIT_USER_NAME:    "Sagar-korumilli"
       GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-      # Your PAT for testing
       GIT_PUSH_TOKEN:  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
 
