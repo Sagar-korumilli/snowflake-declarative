@@ -11,7 +11,6 @@ import snowflake.connector
 from typing import List, Optional, Tuple
 
 def setup_logging() -> logging.Logger:
-    """Setup logging configuration."""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -22,13 +21,11 @@ def setup_logging() -> logging.Logger:
 logger = setup_logging()
 
 def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection, str]:
-    """Establish connection to Snowflake using JWT authentication."""
     required = [
         'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER', 'SNOWFLAKE_ROLE',
         'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_DATABASE',
         'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'
     ]
-    
     for var in required:
         if not os.getenv(var):
             raise RuntimeError(f"❌ Missing environment variable: {var}")
@@ -57,71 +54,60 @@ def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection,
 
 def get_current_ddl(conn: snowflake.connector.SnowflakeConnection, 
                    object_type: str, full_name: str) -> Optional[str]:
-    """Fetch the live DDL for the given object from Snowflake."""
     try:
         with conn.cursor() as cur:
             query = f"SELECT GET_DDL('{object_type}', '{full_name}', TRUE)"
             cur.execute(query)
             result = cur.fetchone()
-            
             if result and result[0]:
                 logger.info(f"✅ Retrieved DDL for {full_name}")
                 return result[0]
             else:
                 logger.warning(f"⚠️ No DDL returned for {full_name}")
                 return None
-                
     except Exception as e:
         logger.error(f"❌ Failed to get DDL for {full_name}: {e}")
         return None
 
 def configure_git_credentials():
-    """Configure Git credentials with PAT token."""
     name = os.getenv('GIT_USER_NAME', 'DDL Sync Bot')
     email = os.getenv('GIT_USER_EMAIL', 'ddl-sync@noreply.github.com')
-    token = os.getenv('GIT_PUSH_TOKEN')
+    token = os.getenv('GIT_PUSH_TOKEN') or os.getenv('GITHUB_TOKEN')
 
     if not token:
-        raise RuntimeError("❌ Missing GIT_PUSH_TOKEN")
+        raise RuntimeError("❌ No authentication token found. Set GIT_PUSH_TOKEN or GITHUB_TOKEN")
 
     try:
-        # Configure git user
         subprocess.run(["git", "config", "--local", "user.name", name], check=True)
         subprocess.run(["git", "config", "--local", "user.email", email], check=True)
 
-        # Get current remote URL
-        try:
-            url = subprocess.check_output(
-                ["git", "config", "--get", "remote.origin.url"], text=True
-            ).strip()
-        except subprocess.CalledProcessError:
-            # Fallback for GitHub Actions
-            repo = os.getenv('GITHUB_REPOSITORY', 'Sagar-korumilli/snowflake-declarative')
-            url = f"https://github.com/{repo}.git"
-
-        # Configure PAT authentication
-        if 'github.com' in url:
-            if url.startswith('https://'):
-                # Replace or add token
-                if '@github.com' in url:
-                    # Remove existing auth
-                    url = re.sub(r'https://[^@]+@github.com/', 'https://github.com/', url)
-                auth_url = url.replace('https://github.com/', f'https://{token}@github.com/')
-            else:
-                # Convert SSH to HTTPS
-                repo_path = url.split(':')[1].replace('.git', '')
-                auth_url = f"https://{token}@github.com/{repo_path}.git"
-                
-            subprocess.run(["git", "remote", "set-url", "origin", auth_url], check=True)
-            logger.info("🔑 Git remote configured with PAT authentication")
+        # Get repository info
+        repo = os.getenv('GITHUB_REPOSITORY')
+        if repo:
+            auth_url = f"https://{token}@github.com/{repo}.git"
         else:
-            raise RuntimeError(f"❌ Unsupported git remote: {url}")
-        
+            try:
+                url = subprocess.check_output(
+                    ["git", "config", "--get", "remote.origin.url"], text=True
+                ).strip()
+                if 'github.com' in url:
+                    if url.startswith('https://'):
+                        if '@github.com' in url:
+                            url = re.sub(r'https://[^@]+@github.com/', 'https://github.com/', url)
+                        auth_url = url.replace('https://github.com/', f'https://{token}@github.com/')
+                    else:
+                        repo_path = url.split(':')[1].replace('.git', '')
+                        auth_url = f"https://{token}@github.com/{repo_path}.git"
+                else:
+                    raise RuntimeError(f"❌ Unsupported git remote: {url}")
+            except subprocess.CalledProcessError:
+                raise RuntimeError("❌ Could not determine git remote URL")
+        subprocess.run(["git", "remote", "set-url", "origin", auth_url], check=True)
+        logger.info("🔑 Git remote configured with authentication")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"❌ Failed to configure Git credentials: {e}")
 
 def has_changes_to_commit(file_path: Path) -> bool:
-    """Check if there are actually changes to commit for the given file."""
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain", str(file_path)], 
@@ -132,7 +118,6 @@ def has_changes_to_commit(file_path: Path) -> bool:
         return False
 
 def git_add_commit_push(file_path: Path, message: str, dry_run: bool = False):
-    """Add, commit, and push changes to Git."""
     if dry_run:
         logger.info(f"🔍 [DRY RUN] Would commit and push: {file_path.name}")
         return
@@ -143,42 +128,30 @@ def git_add_commit_push(file_path: Path, message: str, dry_run: bool = False):
 
     try:
         configure_git_credentials()
-        
-        # Add the file
         subprocess.run(["git", "add", str(file_path)], check=True)
-        
         # Check if there's anything staged
         result = subprocess.run(
             ["git", "diff", "--cached", "--exit-code"], 
             capture_output=True
         )
-        
         if result.returncode == 0:
             logger.info(f"ℹ️ No staged changes for {file_path.name}")
             return
-            
-        # Commit and push
         subprocess.run(["git", "commit", "-m", message], check=True)
         subprocess.run(["git", "push"], check=True)
         logger.info(f"✅ Successfully pushed updated DDL for {file_path.name}")
-        
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Git operation failed for {file_path.name}: {e}")
-        logger.error(f"Command output: {e.stderr if hasattr(e, 'stderr') else 'No stderr'}")
 
 def find_changed_sql_files(sf_root: str) -> List[Path]:
-    """Return all object-level SQL files that contain ALTER statements."""
     altered = []
     alter_pattern = r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+'
-    
     root_path = Path(sf_root)
     if not root_path.exists():
         raise FileNotFoundError(f"❌ Snowflake root directory not found: {sf_root}")
-    
     for schema_dir in root_path.iterdir():
         if not schema_dir.is_dir() or schema_dir.name.lower() in ['rollback', '.git']:
             continue
-            
         for f in schema_dir.glob("*.sql"):
             try:
                 text = f.read_text(encoding='utf-8')
@@ -187,118 +160,104 @@ def find_changed_sql_files(sf_root: str) -> List[Path]:
                     logger.info(f"🔍 Found ALTER statement in: {f}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not read file {f}: {e}")
-    
     return altered
 
 def find_object_file(schema_path: Path, object_name: str, object_type: str) -> Path:
-    """Find the corresponding object file using multiple naming patterns."""
+    """
+    Stricter matching for correct object file!
+    """
     object_name_lower = object_name.lower()
-    
-    patterns = [
-        f"*__{object_name_lower}*.sql",
-        f"{object_name_lower}.sql", 
-        f"*{object_name_lower}*.sql",
-        f"{object_type.lower()}__{object_name_lower}.sql"
-    ]
-    
-    for pattern in patterns:
-        candidates = list(schema_path.glob(pattern))
-        if candidates:
-            logger.info(f"✅ Found existing file: {candidates[0]}")
-            return candidates[0]
-    
-    new_file = schema_path / f"{object_type.lower()}__{object_name_lower}.sql"
-    logger.info(f"ℹ️ Will create new file: {new_file}")
-    return new_file
+
+    # Priority 1: Exact migration filename for the table/view
+    candidates = list(schema_path.glob(f"*__{object_name_lower}_table.sql")) \
+               + list(schema_path.glob(f"*__{object_name_lower}_{object_type.lower()}.sql"))
+    # Priority 2: "__objectname.sql"
+    if not candidates:
+        candidates += list(schema_path.glob(f"*__{object_name_lower}.sql"))
+    # Priority 3: filename part equals to object name (for cases like employees.sql, not employees2.sql)
+    if not candidates:
+        candidates += [f for f in schema_path.glob(f"*{object_name_lower}*.sql")
+                       if re.search(rf"__{object_name_lower}([_.]|$)", f.name)]
+    # Priority 4: fallback to any containing object_name (least strict)
+    if not candidates:
+        candidates += list(schema_path.glob(f"*{object_name_lower}*.sql"))
+    if candidates:
+        # Pick the file with the shortest name (most likely the canonical one)
+        chosen = sorted(candidates, key=lambda p: len(p.name))[0]
+        logger.info(f"✅ Will update DDL file: {chosen}")
+        return chosen
+    else:
+        new_file = schema_path / f"{object_type.lower()}__{object_name_lower}.sql"
+        logger.info(f"ℹ️ Will create new file: {new_file}")
+        return new_file
 
 def extract_alter_statements(sql_content: str) -> List[Tuple[str, str, str]]:
-    """Extract ALTER statements from SQL content."""
+    # Handles ALTER <TYPE> schema.object
     pattern = r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+(\w+)\.(\w+)'
     matches = re.findall(pattern, sql_content, re.IGNORECASE)
-    
     results = []
     for obj_type, schema_name, obj_name in matches:
         results.append((obj_type.upper(), schema_name, obj_name))
-    
     return results
 
 def update_object_file(schema_path: Path, changed_file: Path, 
                       conn: snowflake.connector.SnowflakeConnection, 
                       dry_run: bool = False):
-    """Update object file with current DDL from Snowflake."""
     try:
         sql_content = changed_file.read_text(encoding='utf-8')
         alter_statements = extract_alter_statements(sql_content)
-        
         if not alter_statements:
             logger.info(f"ℹ️ No ALTER statements found in {changed_file.name}")
             return
-
         db = os.getenv('SNOWFLAKE_DATABASE')
-        
         for obj_type, schema_name, obj_name in alter_statements:
             full_name = f"{db}.{schema_name}.{obj_name}"
             logger.info(f"🔄 Processing {obj_type}: {full_name}")
-            
             ddl = get_current_ddl(conn, obj_type, full_name)
             if not ddl:
                 logger.warning(f"⚠️ Skipping {full_name} - could not retrieve DDL")
                 continue
-            
             target_file = find_object_file(schema_path, obj_name, obj_type)
-            
             if dry_run:
                 logger.info(f"🔍 [DRY RUN] Would update: {target_file}")
                 continue
-            
             ddl_content = ddl.strip() + "\n"
             target_file.write_text(ddl_content, encoding='utf-8')
-            
             commit_message = f"chore: refresh {obj_type.lower()} DDL for {full_name}"
             git_add_commit_push(target_file, commit_message, dry_run)
-            
     except Exception as e:
         logger.error(f"❌ Error updating object file {changed_file}: {e}")
 
 def main():
-    """Main function to orchestrate the DDL synchronization process."""
     parser = argparse.ArgumentParser(
         description="Refresh object-level DDL in Git from Snowflake after ALTER statements"
     )
     parser.add_argument('--snowflake-root', required=True)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--debug', action='store_true')
-    
+
     args = parser.parse_args()
-    
+
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     logger.info("🚀 Starting DDL synchronization process")
-    
     try:
         changed_files = find_changed_sql_files(args.snowflake_root)
-        
         if not changed_files:
             logger.info("✅ No ALTER scripts detected; exiting.")
             return
-
         logger.info(f"🔍 Detected {len(changed_files)} files with ALTER statements")
-        
         conn, key_path = get_snowflake_connection()
-        
         try:
             for changed_file in changed_files:
                 logger.info(f"🔄 Processing: {changed_file}")
                 update_object_file(changed_file.parent, changed_file, conn, args.dry_run)
-                
         finally:
             conn.close()
             os.remove(key_path)
             logger.info("🔒 Cleaned up Snowflake connection")
-
         logger.info("✅ DDL synchronization completed successfully")
-        
     except Exception as e:
         logger.error(f"❌ DDL synchronization failed: {e}")
         sys.exit(1)
