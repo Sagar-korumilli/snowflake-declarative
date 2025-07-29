@@ -8,123 +8,123 @@ import subprocess
 import snowflake.connector
 
 def get_snowflake_connection():
-    SNOWFLAKE_ACCOUNT = os.getenv('SNOWFLAKE_ACCOUNT')
-    SNOWFLAKE_USER = os.getenv('SNOWFLAKE_USER')
-    SNOWFLAKE_ROLE = os.getenv('SNOWFLAKE_ROLE')
-    SNOWFLAKE_WAREHOUSE = os.getenv('SNOWFLAKE_WAREHOUSE')
-    SNOWFLAKE_DATABASE = os.getenv('SNOWFLAKE_DATABASE')
-    SNOWFLAKE_PRIVATE_KEY = os.getenv('SNOWFLAKE_PRIVATE_KEY')
-    SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = os.getenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE')
-    for var in [
+    # Environment variables
+    required = [
         'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER', 'SNOWFLAKE_ROLE',
         'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_DATABASE',
         'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'
-    ]:
-        if not locals().get(var):
+    ]
+    for var in required:
+        if not os.getenv(var):
             raise RuntimeError(f"❌ Missing environment variable: {var}")
+
+    # Write private key to temp file
     with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".pem") as key_file:
-        key_file.write(SNOWFLAKE_PRIVATE_KEY)
+        key_file.write(os.getenv('SNOWFLAKE_PRIVATE_KEY'))
         key_path = key_file.name
     os.chmod(key_path, 0o600)
+
     conn = snowflake.connector.connect(
-        account=SNOWFLAKE_ACCOUNT,
-        user=SNOWFLAKE_USER,
-        role=SNOWFLAKE_ROLE,
-        warehouse=SNOWFLAKE_WAREHOUSE,
-        database=SNOWFLAKE_DATABASE,
+        account=os.getenv('SNOWFLAKE_ACCOUNT'),
+        user=os.getenv('SNOWFLAKE_USER'),
+        role=os.getenv('SNOWFLAKE_ROLE'),
+        warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+        database=os.getenv('SNOWFLAKE_DATABASE'),
         private_key_file=key_path,
-        private_key_file_pwd=SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
+        private_key_file_pwd=os.getenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'),
         authenticator='snowflake_jwt'
     )
     return conn, key_path
 
+
 def get_current_ddl(conn, object_type: str, full_name: str) -> str:
+    """
+    Fetch the live DDL for the given object.
+    object_type: TABLE, VIEW, etc.
+    full_name: SCHEMA.OBJECT_NAME
+    """
     with conn.cursor() as cur:
         cur.execute(f"SELECT GET_DDL('{object_type}', '{full_name}', TRUE)")
         return cur.fetchone()[0]
 
-def replace_object(sql: str, object_type: str, full_name: str, new_ddl: str) -> str:
-    pattern = rf"(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?{object_type}\s+{re.escape(full_name)}\s+.*?;)"
-    return re.sub(pattern, new_ddl.strip() + ";", sql, flags=re.DOTALL)
 
-def git_add_commit_push(file_path, message):
-    file_path = str(file_path)
+def git_add_commit_push(file_path: Path, message: str):
+    # set local git identity to avoid errors
+    subprocess.run(["git", "config", "--local", "user.email", "ci-bot@example.com"], check=True)
+    subprocess.run(["git", "config", "--local", "user.name", "CI Bot"], check=True)
     try:
-        subprocess.run(["git", "add", file_path], check=True)
+        subprocess.run(["git", "add", str(file_path)], check=True)
         subprocess.run(["git", "commit", "-m", message], check=True)
-        print(f"✅ Git commit created for {file_path}")
         subprocess.run(["git", "push"], check=True)
-        print("✅ Git push completed")
+        print(f"✅ Updated and pushed {file_path.name}")
     except subprocess.CalledProcessError as e:
-        print(f"⚠️ Git command failed: {e}")
-        # Optionally, you can exit or continue.
+        print(f"⚠️ Git error: {e}")
 
-def update_setup_with_changes(schema_path: Path, changed_file: Path, conn):
-    setup_file = next(schema_path.glob("V001__*.sql"))
-    original_sql = setup_file.read_text()
-    changed_sql = changed_file.read_text()
-    updated_sql = original_sql
 
-    for sch, tbl in re.findall(r'ALTER\s+TABLE\s+(\w+)\.(\w+)', changed_sql, re.IGNORECASE):
-        full_name = f"{sch}.{tbl}"
-        ddl = get_current_ddl(conn, "TABLE", full_name)
-        updated_sql = replace_object(updated_sql, "TABLE", full_name, ddl)
-
-    # Create backup directory if missing
-    backup_dir = schema_path / "backup"
-    backup_dir.mkdir(exist_ok=True)
-    backup_path = backup_dir / setup_file.name
-    backup_path.write_text(updated_sql)
-    print(f"✅ Backup created at {backup_path}")
-    print(f"\n📄 Backup file content ({backup_path}):\n{'-'*60}")
-    print(backup_path.read_text())
-    print('-' * 60)
-
-    # Automatically git add, commit, and push after backup file is created
-    git_message = f"Update DDL backup for {schema_path.name} after {changed_file.name}"
-    git_add_commit_push(backup_path, git_message)
-
-def find_changed_sql_files(sf_root: str) -> list:
+def find_changed_sql_files(sf_root: str) -> list[Path]:
+    """
+    Return all ALTER scripts under each schema (e.g., files containing ALTER TABLE).
+    """
     changed = []
     for schema_dir in Path(sf_root).iterdir():
-        if schema_dir.is_dir() and schema_dir.name != "rollback":
-            sql_files = sorted(schema_dir.glob("V[0-9]*__*.sql"))
-            latest = None
-            latest_version = -1
-            for sql_file in sql_files:
-                if sql_file.name.startswith("V001__"):
-                    continue
-                match = re.match(r'V(\d+)', sql_file.name)
-                if match:
-                    version = int(match.group(1))
-                    if version > latest_version:
-                        latest = sql_file
-                        latest_version = version
-            if latest:
-                changed.append(latest)
+        if not schema_dir.is_dir() or schema_dir.name == 'rollback':
+            continue
+        # find any sql containing ALTER TABLE or ALTER VIEW
+        for f in schema_dir.glob('*.sql'):
+            text = f.read_text()
+            if re.search(r'ALTER\s+(?:TABLE|VIEW)\s+', text, re.IGNORECASE):
+                changed.append(f)
     return changed
+
+
+def update_object_file(schema_path: Path, changed_file: Path, conn):
+    """
+    For each ALTER statement in changed_file, fetch latest DDL and overwrite the object's file.
+    """
+    sql = changed_file.read_text()
+    alters = re.findall(r'ALTER\s+(TABLE|VIEW)\s+(\w+)\.(\w+)', sql, re.IGNORECASE)
+    if not alters:
+        print(f"ℹ️ No ALTERs found in {changed_file.name}")
+        return
+
+    for obj_type, sch, tbl in alters:
+        full_name = f"{sch}.{tbl}"
+        ddl = get_current_ddl(conn, obj_type.upper(), full_name)
+
+        # find the corresponding object-level file by name
+        pattern = f"*__{tbl.lower()}*.sql"
+        candidates = list(schema_path.glob(pattern))
+        if not candidates:
+            print(f"⚠️ No file matching {pattern} in {schema_path}")
+            continue
+        # pick first match
+        target = candidates[0]
+
+        # overwrite with fetched DDL (plus semicolon)
+        target.write_text(ddl.strip() + '\n')
+        msg = f"chore: refresh {obj_type.lower()} DDL for {sch}.{tbl}"
+        git_add_commit_push(target, msg)
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--snowflake-root', required=True, help="Root folder containing schema subfolders")
+    parser.add_argument('--snowflake-root', required=True)
     args = parser.parse_args()
-    sf_root = args.snowflake_root
 
-    changed_files = find_changed_sql_files(sf_root)
+    changed_files = find_changed_sql_files(args.snowflake_root)
     if not changed_files:
-        print("✅ No changed SQL files; skipping backups.")
-        return
+        print("✅ No ALTER scripts detected; exiting.")
+        sys.exit(0)
 
-    print(f"🔍 Latest changed SQL files: {[str(f) for f in changed_files]}")
     conn, key_path = get_snowflake_connection()
     try:
-        for changed_file in changed_files:
-            schema = changed_file.parts[1]
-            schema_path = Path(sf_root) / schema
-            update_setup_with_changes(schema_path, changed_file, conn)
+        for ch in changed_files:
+            schema = ch.parent.stem
+            update_object_file(Path(args.snowflake_root)/schema, ch, conn)
     finally:
         conn.close()
         os.remove(key_path)
+        print("✔️ Done.")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
