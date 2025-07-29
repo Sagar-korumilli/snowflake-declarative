@@ -1,6 +1,9 @@
 name: Selective cherry-pick on PR
 
 on:
+  push:
+    branches:
+      - cherry-pick
   issue_comment:
     types: [created]
 
