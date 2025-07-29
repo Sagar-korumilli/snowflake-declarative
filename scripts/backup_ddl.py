@@ -8,6 +8,14 @@ from pathlib import Path
 import subprocess
 import snowflake.connector
 
+# --------------------
+# Configuration
+# Environment variables expected for Git:
+#   GIT_USER_NAME    - e.g. "Alice Example"
+#   GIT_USER_EMAIL   - e.g. "alice@example.com"
+#   GIT_PUSH_TOKEN   - Personal access token for push auth
+# --------------------
+
 def get_snowflake_connection():
     required = [
         'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER', 'SNOWFLAKE_ROLE',
@@ -18,7 +26,6 @@ def get_snowflake_connection():
         if not os.getenv(var):
             raise RuntimeError(f"❌ Missing environment variable: {var}")
 
-    # write the private key to a temp PEM file
     with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".pem") as key_file:
         key_file.write(os.getenv('SNOWFLAKE_PRIVATE_KEY'))
         key_path = key_file.name
@@ -36,38 +43,56 @@ def get_snowflake_connection():
     )
     return conn, key_path
 
-def get_current_ddl(conn, object_type: str, full_name: str) -> str:
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT GET_DDL('{object_type}', '{full_name}', TRUE)")
-        return cur.fetchone()[0]
+
+def configure_git_credentials():
+    """
+    Configure Git user name, email, and HTTP remote URL using a personal token.
+    Requires GIT_USER_NAME, GIT_USER_EMAIL, GIT_PUSH_TOKEN.
+    """
+    name = os.getenv('GIT_USER_NAME')
+    email = os.getenv('GIT_USER_EMAIL')
+    token = os.getenv('GIT_PUSH_TOKEN')
+
+    if not (name and email and token):
+        raise RuntimeError("❌ Missing one of GIT_USER_NAME, GIT_USER_EMAIL, or GIT_PUSH_TOKEN")
+
+    subprocess.run(["git", "config", "--local", "user.name", name], check=True)
+    subprocess.run(["git", "config", "--local", "user.email", email], check=True)
+
+    # rewrite origin URL to include the token for HTTPS authentication
+    url = subprocess.check_output(
+        ["git", "config", "--get", "remote.origin.url"], text=True
+    ).strip()
+    if url.startswith('https://'):
+        auth_url = url.replace('https://', f'https://{token}@')
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", auth_url],
+            check=True
+        )
+        print("🔑 Git remote 'origin' updated with token auth.")
+
 
 def git_add_commit_push(file_path: Path, message: str):
-    # configure a local git identity to avoid 'empty ident' errors
-    subprocess.run(["git", "config", "--local", "user.email", "ci-bot@example.com"], check=True)
-    subprocess.run(["git", "config", "--local", "user.name",  "CI Bot"], check=True)
-
+    configure_git_credentials()
     try:
         subprocess.run(["git", "add", str(file_path)], check=True)
         subprocess.run(["git", "commit", "-m", message], check=True)
-        # relies on actions/checkout persist-credentials for push auth
         subprocess.run(["git", "push"], check=True)
         print(f"✅ Pushed updated DDL for {file_path.name}")
     except subprocess.CalledProcessError as e:
         print(f"⚠️ Git error: {e}")
 
+
 def find_changed_sql_files(sf_root: str) -> list[Path]:
-    """
-    Return all object-level SQL files that contain ALTER TABLE/VIEW statements.
-    """
     altered = []
     for schema_dir in Path(sf_root).iterdir():
         if not schema_dir.is_dir() or schema_dir.name.lower() == 'rollback':
             continue
         for f in schema_dir.glob("*.sql"):
-            text = f.read_text()
-            if re.search(r'ALTER\s+(TABLE|VIEW)\s+\w+\.\w+', text, re.IGNORECASE):
+            if re.search(r'ALTER\s+(TABLE|VIEW)\s+\w+\.\w+', f.read_text(), re.IGNORECASE):
                 altered.append(f)
     return altered
+
 
 def update_object_file(schema_path: Path, changed_file: Path, conn):
     sql = changed_file.read_text()
@@ -80,7 +105,7 @@ def update_object_file(schema_path: Path, changed_file: Path, conn):
         full_name = f"{sch}.{tbl}"
         ddl = get_current_ddl(conn, obj_type.upper(), full_name).strip() + "\n"
 
-        # match your naming convention; adjust if needed
+        # match object-level filename convention
         pattern = f"*__{tbl.lower()}*.sql"
         candidates = list(schema_path.glob(pattern))
         if not candidates:
@@ -92,10 +117,15 @@ def update_object_file(schema_path: Path, changed_file: Path, conn):
         msg = f"chore: refresh {obj_type.lower()} DDL for {full_name}"
         git_add_commit_push(target, msg)
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Refresh object-level DDL in Git from Snowflake")
-    parser.add_argument('--snowflake-root', required=True,
-                        help="Root dir containing schema subfolders")
+    parser = argparse.ArgumentParser(
+        description="Refresh object-level DDL in Git from Snowflake"
+    )
+    parser.add_argument(
+        '--snowflake-root', required=True,
+        help="Root dir containing schema subfolders"
+    )
     args = parser.parse_args()
 
     changed_files = find_changed_sql_files(args.snowflake_root)
@@ -107,8 +137,7 @@ def main():
     conn, key_path = get_snowflake_connection()
     try:
         for ch in changed_files:
-            schema_dir = ch.parent
-            update_object_file(schema_dir, ch, conn)
+            update_object_file(ch.parent, ch, conn)
     finally:
         conn.close()
         os.remove(key_path)
