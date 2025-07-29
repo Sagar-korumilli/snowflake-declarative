@@ -10,6 +10,7 @@ import sys
 import json
 import argparse
 import snowflake.connector
+from pathlib import Path 
 from snowflake.connector.errors import ProgrammingError
 from git import Repo
 
