@@ -130,6 +130,14 @@ jobs:
           done
 
       - name: Snapshot updated DDL baseline
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/backup_ddl.py --snowflake-root snowflake/
 
       - name: Nothing to do
