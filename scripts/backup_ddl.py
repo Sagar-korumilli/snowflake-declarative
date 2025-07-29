@@ -44,6 +44,17 @@ def get_snowflake_connection():
     return conn, key_path
 
 
+def get_current_ddl(conn, object_type: str, full_name: str) -> str:
+    """
+    Fetch the live DDL for the given object from Snowflake.
+    object_type: TABLE, VIEW, etc.
+    full_name: DATABASE.SCHEMA.OBJECT_NAME
+    """
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT GET_DDL('{object_type}', '{full_name}', TRUE)")
+        return cur.fetchone()[0]
+
+
 def configure_git_credentials():
     """
     Configure Git user name, email, and HTTP remote URL using a personal token.
@@ -84,12 +95,16 @@ def git_add_commit_push(file_path: Path, message: str):
 
 
 def find_changed_sql_files(sf_root: str) -> list[Path]:
+    """
+    Return all object-level SQL files that contain ALTER TABLE/VIEW statements.
+    """
     altered = []
     for schema_dir in Path(sf_root).iterdir():
         if not schema_dir.is_dir() or schema_dir.name.lower() == 'rollback':
             continue
         for f in schema_dir.glob("*.sql"):
-            if re.search(r'ALTER\s+(TABLE|VIEW)\s+\w+\.\w+', f.read_text(), re.IGNORECASE):
+            text = f.read_text()
+            if re.search(r'ALTER\s+(TABLE|VIEW)\s+\w+\.\w+', text, re.IGNORECASE):
                 altered.append(f)
     return altered
 
@@ -101,8 +116,10 @@ def update_object_file(schema_path: Path, changed_file: Path, conn):
         print(f"ℹ️ No ALTER statements found in {changed_file.name}")
         return
 
+    db = os.getenv('SNOWFLAKE_DATABASE')
     for obj_type, sch, tbl in alters:
-        full_name = f"{sch}.{tbl}"
+        # include database in full name
+        full_name = f"{db}.{sch}.{tbl}"
         ddl = get_current_ddl(conn, obj_type.upper(), full_name).strip() + "\n"
 
         # match object-level filename convention
