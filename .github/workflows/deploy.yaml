@@ -22,7 +22,8 @@ jobs:
       GIT_USER_NAME:    "Sagar-korumilli"
       GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
       # Your PAT for testing
-      GIT_PUSH_TOKEN:   "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"
+      GIT_PUSH_TOKEN:  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
 
     steps:
       - name: Checkout code
@@ -30,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0
           # Use the PAT directly here instead of the token parameter
-          token: "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"
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           persist-credentials: true
 
       - name: Set up Python 3.11
