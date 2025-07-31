@@ -1,3 +1,4 @@
+```python
 import argparse
 import os
 import sys
@@ -6,9 +7,10 @@ from cryptography.hazmat.backends import default_backend
 import snowflake.connector
 
 def get_snowflake_connection():
+    # load env vars
     user = os.getenv("SNOWFLAKE_USER")
     account = os.getenv("SNOWFLAKE_ACCOUNT")
-    private_key_str = os.getenv("SNOWFLAKE_PRIVATE_KEY")  # Raw PEM string
+    private_key_str = os.getenv("SNOWFLAKE_PRIVATE_KEY")
     private_key_passphrase = os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
     role = os.getenv("SNOWFLAKE_ROLE")
     warehouse = os.getenv("SNOWFLAKE_WAREHOUSE")
@@ -18,6 +20,7 @@ def get_snowflake_connection():
         print("❌ Missing required Snowflake environment variables", file=sys.stderr)
         sys.exit(1)
 
+    # load private key
     private_key = serialization.load_pem_private_key(
         private_key_str.encode('utf-8'),
         password=private_key_passphrase.encode() if private_key_passphrase else None,
@@ -30,6 +33,7 @@ def get_snowflake_connection():
         encryption_algorithm=serialization.NoEncryption()
     )
 
+    # connect
     ctx = snowflake.connector.connect(
         user=user,
         account=account,
@@ -41,11 +45,13 @@ def get_snowflake_connection():
     )
     return ctx
 
+
 def rollback_table(conn, database, schema, table, timestamp):
     cursor = conn.cursor()
 
-    qualified_table = f'"{database}"."{schema}"."{table}"'
-    backup_table = f'"{database}"."{schema}"."{table}_backup_for_rollback"'
+    # Use unquoted identifiers (Snowflake uppercases unquoted)
+    qualified_table = f"{database}.{schema}.{table}"
+    backup_table = f"{database}.{schema}.{table}_backup_for_rollback"
 
     try:
         print(f"Creating backup table {backup_table} from {qualified_table} at timestamp {timestamp}...")
@@ -55,16 +61,15 @@ def rollback_table(conn, database, schema, table, timestamp):
         """)
 
         print(f"Restoring main table {qualified_table} from backup {backup_table}...")
-        # You can choose either replace or truncate+insert; here truncate + insert is used:
         cursor.execute(f"TRUNCATE TABLE {qualified_table};")
         cursor.execute(f"INSERT INTO {qualified_table} SELECT * FROM {backup_table};")
 
     finally:
         print(f"Dropping backup table {backup_table}...")
-        # Drop the backup table regardless of previous success/failure
         cursor.execute(f"DROP TABLE IF EXISTS {backup_table};")
 
     cursor.close()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Snowflake Time Travel Rollback Script with backup table")
@@ -73,6 +78,10 @@ def main():
     parser.add_argument("--schema", default="PUBLIC", help="Schema name (default PUBLIC)")
     parser.add_argument("--tables", nargs='*', default=[], help="List of tables to rollback. If omitted, all tables in schema are rolled back.")
     args = parser.parse_args()
+
+    # sanitize inputs
+    args.schema = args.schema.strip('"').upper()
+    args.tables = [t.strip('"').upper() for t in args.tables]
 
     conn = get_snowflake_connection()
 
@@ -102,6 +111,7 @@ def main():
 
     print("Rollback process completed.")
     conn.close()
+
 
 if __name__ == "__main__":
     main()
