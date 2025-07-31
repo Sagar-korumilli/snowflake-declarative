@@ -1,4 +1,4 @@
-name: Snowflake Full Deploy with Auto-Rollback
+name: ❄️ Snowflake Full Deploy with Auto-Rollback
 
 on:
   push:
@@ -30,20 +30,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
+  
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+  
       - name: Install dependencies
         run: pip install snowflake-connector-python cryptography
-
+  
       - name: Get Snowflake Timestamp
         id: get_ts
         run: |
           python scripts/get_snowflake_timestamp.py > rollback_timestamp.txt
-          ts=$(<rollback_timestamp.txt)
+          cat rollback_timestamp.txt
+          ts=$(cat rollback_timestamp.txt)
           echo "rollback_timestamp=$ts" >> $GITHUB_OUTPUT
 
   # Step 2: Deploy job that also captures which schema/table failed
