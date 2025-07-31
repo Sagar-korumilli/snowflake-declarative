@@ -43,6 +43,7 @@ jobs:
         id: get_ts
         run: |
           python scripts/get_snowflake_timestamp.py > rollback_timestamp.txt
+          cat rollback_timestamp.txt
           echo "rollback_timestamp=$(<rollback_timestamp.txt)" >> $GITHUB_OUTPUT
 
   # Step 2: Deploy job that captures failure context
