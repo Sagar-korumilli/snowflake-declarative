@@ -192,8 +192,12 @@ jobs:
       - name: Auto-rollback only failed object
         run: |
           echo "Rollback timestamp: $ROLLBACK_TIMESTAMP"
-          SCHEMA="${{ needs.deploy.outputs.failed_schema }}"
-          TABLE="${{ needs.deploy.outputs.failed_table }}"
+          # Sanitize and trim any quotes or whitespace from outputs
+          SCHEMA_RAW="${{ needs.deploy.outputs.failed_schema }}"
+          TABLE_RAW="${{ needs.deploy.outputs.failed_table }}"
+          SCHEMA="$(echo "$SCHEMA_RAW" | tr -d '" ' )"
+          TABLE="$(echo "$TABLE_RAW" | tr -d '" ' )"
+
           echo "❗ Schema to rollback: $SCHEMA"
           echo "❗ Table to rollback: $TABLE"
           if [ -z "$SCHEMA" ] || [ -z "$TABLE" ]; then
