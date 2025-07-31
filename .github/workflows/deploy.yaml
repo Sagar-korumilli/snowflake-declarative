@@ -154,7 +154,7 @@ jobs:
   rollback:
     needs: [capture_timestamp, deploy]
     runs-on: ubuntu-latest
-    if: needs.deploy.result == 'failure'
+    if: failure() && needs.capture_timestamp.result == 'success'
     env:
       SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
