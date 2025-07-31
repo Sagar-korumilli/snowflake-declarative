@@ -1,54 +1,200 @@
-import os
-import sys
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
-import snowflake.connector
+name: ❄️ Snowflake Full Deploy with Auto-Rollback
 
-def get_snowflake_connection():
-    user = os.getenv("SNOWFLAKE_USER")
-    account = os.getenv("SNOWFLAKE_ACCOUNT")
-    private_key_str = os.getenv("SNOWFLAKE_PRIVATE_KEY")  # Raw PEM string from secret
-    private_key_passphrase = os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
-    role = os.getenv("SNOWFLAKE_ROLE")
-    warehouse = os.getenv("SNOWFLAKE_WAREHOUSE")
-    database = os.getenv("SNOWFLAKE_DATABASE")
+on:
+  push:
+    branches:
+      - cherry-pick
+  workflow_dispatch:
 
-    if not all([user, account, private_key_str, role, warehouse, database]):
-        print("❌ Missing required Snowflake environment variables", file=sys.stderr)
-        sys.exit(1)
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
 
-    # Load private key from PEM string without base64 decoding
-    private_key = serialization.load_pem_private_key(
-        private_key_str.encode('utf-8'),
-        password=private_key_passphrase.encode() if private_key_passphrase else None,
-        backend=default_backend()
-    )
+jobs:
+  # Step 1: Capture rollback timestamp before deployment
+  capture_timestamp:
+    runs-on: ubuntu-latest
+    outputs:
+      rollback_timestamp: ${{ steps.get_ts.outputs.rollback_timestamp }}
+    env:
+      SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    pkb = private_key.private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    ctx = snowflake.connector.connect(
-        user=user,
-        account=account,
-        private_key=pkb,
-        role=role,
-        warehouse=warehouse,
-        database=database,
-        autocommit=True,
-    )
-    return ctx
+      - name: Install dependencies
+        run: pip install snowflake-connector-python cryptography
 
-def main():
-    conn = get_snowflake_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT CURRENT_TIMESTAMP()")
-    ts = cursor.fetchone()[0]
-    print(ts.strftime('%Y-%m-%d %H:%M:%S'))
-    cursor.close()
-    conn.close()
+      - name: Get Snowflake Timestamp
+        id: get_ts
+        run: |
+          python scripts/get_snowflake_timestamp.py > rollback_timestamp.txt
+          echo "rollback_timestamp=$(<rollback_timestamp.txt)" >> $GITHUB_OUTPUT
 
-if __name__ == "__main__":
-    main()
+  # Step 2: Deploy job that captures failure context
+  deploy:
+    needs: capture_timestamp
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      failed_schema: ${{ steps.deploy_migrations.outputs.failed_schema }}
+      failed_table:  ${{ steps.deploy_migrations.outputs.failed_table }}
+    env:
+      SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+      ROLLBACK_TIMESTAMP:              ${{ needs.capture_timestamp.outputs.rollback_timestamp }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install schemachange==4.0.1 snowflake-connector-python GitPython cryptography
+
+      - name: Validate Snowflake env vars
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY \
+                  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE \
+                  SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Missing $v"
+              exit 1
+            fi
+          done
+
+      - name: Write private key file
+        run: |
+          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
+
+      - name: Generate connections.toml
+        run: |
+          cat > connections.toml <<EOF
+          [connections]
+            account             = "${SNOWFLAKE_ACCOUNT}"
+            user                = "${SNOWFLAKE_USER}"
+            private_key_file    = "key.pem"
+            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+            authenticator       = "snowflake_jwt"
+            role                = "${SNOWFLAKE_ROLE}"
+            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+            database            = "${SNOWFLAKE_DATABASE}"
+          EOF
+          chmod 600 connections.toml
+
+      - name: Validate for risky SQL
+        run: python scripts/sql_risk_validator.py --snowflake-root snowflake/
+
+      - name: Deploy versioned migrations
+        id: deploy_migrations
+        shell: bash
+        run: |
+          for d in snowflake/*; do
+            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
+              schema_name=$(basename "$d")
+              echo "🚀 Deploying schema $schema_name"
+              set -o pipefail
+
+              schemachange deploy \
+                --connections-file connections.toml \
+                --connection-name connections \
+                --root-folder $d \
+                --change-history-table "${SNOWFLAKE_DATABASE}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
+                --create-change-history-table -v 2>&1 \
+                | tee migration.log
+
+              rc=${PIPESTATUS[0]}
+              if [ $rc -ne 0 ]; then
+                # Print failure context
+                echo "❌ Migration failed in schema: $schema_name"
+                failed_script=$(grep -oP 'Failed to execute \K[^\.]+(?=\.sql)' migration.log || true)
+                table_name=$(echo "$failed_script" | sed -E 's/^V[0-9]+__([A-Za-z0-9]+).*/\1/')
+                echo "❌ Failed script: $failed_script" 
+                echo "❌ Derived table: $table_name"
+
+                # Export outputs for rollback use
+                echo "failed_schema=$schema_name" >> $GITHUB_OUTPUT
+                echo "failed_table=$table_name"  >> $GITHUB_OUTPUT
+                exit $rc
+              fi
+            fi
+          done
+
+      - name: Snapshot updated DDL baseline
+        if: success()
+        run: python scripts/backup_ddl.py --snowflake-root snowflake/
+
+      - name: Clean up temporary files
+        if: always()
+        run: |
+          rm -f key.pem connections.toml migration.log
+
+  # Step 3: Automatic rollback job runs only if deploy fails
+  rollback:
+    needs: [capture_timestamp, deploy]
+    runs-on: ubuntu-latest
+    if: failure() && needs.capture_timestamp.result == 'success'
+    env:
+      SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+      ROLLBACK_TIMESTAMP:              ${{ needs.capture_timestamp.outputs.rollback_timestamp }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install snowflake-connector-python cryptography
+
+      - name: Auto-rollback only failed object
+        run: |
+          echo "Rollback timestamp: $ROLLBACK_TIMESTAMP"
+          SCHEMA="${{ needs.deploy.outputs.failed_schema }}"
+          TABLE="${{ needs.deploy.outputs.failed_table }}"
+          echo "Rolling back $SCHEMA.$TABLE..."
+          python scripts/rollback_time_travel.py \
+            --timestamp "$ROLLBACK_TIMESTAMP" \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema "$SCHEMA" \
+            --tables "$TABLE"
