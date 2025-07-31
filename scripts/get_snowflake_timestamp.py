@@ -1,54 +1,61 @@
 import os
 import sys
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
+import tempfile
 import snowflake.connector
 
 def get_snowflake_connection():
-    user = os.getenv("SNOWFLAKE_USER")
-    account = os.getenv("SNOWFLAKE_ACCOUNT")
-    private_key_str = os.getenv("SNOWFLAKE_PRIVATE_KEY")  # Raw PEM string from secret
-    private_key_passphrase = os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
-    role = os.getenv("SNOWFLAKE_ROLE")
-    warehouse = os.getenv("SNOWFLAKE_WAREHOUSE")
-    database = os.getenv("SNOWFLAKE_DATABASE")
+    # ensure required env vars exist
+    required = [
+        'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USER', 'SNOWFLAKE_ROLE',
+        'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_DATABASE',
+        'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'
+    ]
+    for var in required:
+        if not os.getenv(var):
+            print(f"❌ Missing environment variable: {var}", file=sys.stderr)
+            sys.exit(1)
 
-    if not all([user, account, private_key_str, role, warehouse, database]):
-        print("❌ Missing required Snowflake environment variables", file=sys.stderr)
+    # write raw PEM from env into a temp file
+    key_content = os.getenv('SNOWFLAKE_PRIVATE_KEY')
+    with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.pem') as key_file:
+        key_file.write(key_content)
+        key_path = key_file.name
+    os.chmod(key_path, 0o600)
+
+    try:
+        ctx = snowflake.connector.connect(
+            user=os.getenv('SNOWFLAKE_USER'),
+            account=os.getenv('SNOWFLAKE_ACCOUNT'),
+            role=os.getenv('SNOWFLAKE_ROLE'),
+            warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+            database=os.getenv('SNOWFLAKE_DATABASE'),
+            private_key_file=key_path,
+            private_key_file_pwd=os.getenv('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'),
+            authenticator='snowflake_jwt',
+            autocommit=True
+        )
+        return ctx, key_path
+    except Exception as e:
+        os.remove(key_path)
+        print(f"❌ Failed to connect to Snowflake: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Load private key from PEM string without base64 decoding
-    private_key = serialization.load_pem_private_key(
-        private_key_str.encode('utf-8'),
-        password=private_key_passphrase.encode() if private_key_passphrase else None,
-        backend=default_backend()
-    )
-
-    pkb = private_key.private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-
-    ctx = snowflake.connector.connect(
-        user=user,
-        account=account,
-        private_key=pkb,
-        role=role,
-        warehouse=warehouse,
-        database=database,
-        autocommit=True,
-    )
-    return ctx
 
 def main():
-    conn = get_snowflake_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT CURRENT_TIMESTAMP()")
-    ts = cursor.fetchone()[0]
-    print(ts.strftime('%Y-%m-%d %H:%M:%S'))
-    cursor.close()
-    conn.close()
+    conn, key_path = get_snowflake_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT CURRENT_TIMESTAMP()")
+        ts = cursor.fetchone()[0]
+        print(ts.strftime('%Y-%m-%d %H:%M:%S'))
+        cursor.close()
+    finally:
+        conn.close()
+        # clean up
+        try:
+            os.remove(key_path)
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
