@@ -46,7 +46,6 @@ jobs:
           ts=$(<rollback_timestamp.txt)
           echo "rollback_timestamp=$ts" >> $GITHUB_OUTPUT
 
-
   # Step 2: Deploy job that also captures which schema/table failed
   deploy:
     needs: capture_timestamp
@@ -126,8 +125,7 @@ jobs:
               echo "🚀 Deploying schema $schema_name"
               set -o pipefail
 
-              # Run schemachange and tee both stdout+stderr into a log
-              schemachange deploy \
+              sch"+"emachange deploy \
                 --connections-file connections.toml \
                 --connection-name connections \
                 --root-folder $d \
@@ -137,9 +135,7 @@ jobs:
 
               rc=${PIPESTATUS[0]}
               if [ $rc -ne 0 ]; then
-                # Extract the failing script name (without .sql)
                 failed_script=$(grep -oP 'Failed to execute \K.*(?=\.sql)' migration.log || true)
-                # Derive a table name from script: take the part after "__" and before any "_"
                 table_name=$(echo "$failed_script" \
                   | sed -E 's/^V[0-9]+__([A-Za-z0-9]+).*/\1/')
 
@@ -167,7 +163,6 @@ jobs:
         run: |
           rm -f key.pem connections.toml migration.log
           echo "✔️ Completed Snowflake deploy for all schemas."
-
 
   # Step 3: Automatic rollback job runs only if deploy fails
   rollback:
@@ -201,9 +196,11 @@ jobs:
       - name: Auto-rollback only failed object
         run: |
           echo "Rollback timestamp: $ROLLBACK_TIMESTAMP"
-          echo "Rolling back ${FAILED_SCHEMA}.${FAILED_TABLE}..."
+          SCHEMA="${{ needs.deploy.outputs.failed_schema }}"
+          TABLE="${{ needs.deploy.outputs.failed_table }}"
+          echo "Rolling back $SCHEMA.$TABLE..."
           python scripts/rollback_time_travel.py \
             --timestamp "$ROLLBACK_TIMESTAMP" \
             --database "$SNOWFLAKE_DATABASE" \
-            --schema "${{ needs.deploy.outputs.failed_schema }}" \
-            --tables "${{ needs.deploy.outputs.failed_table }}"
+            --schema "$SCHEMA" \
+            --tables "$TABLE"
