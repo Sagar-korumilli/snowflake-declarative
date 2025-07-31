@@ -3,7 +3,7 @@ name: ❄️ Snowflake Full Deploy with Auto-Rollback
 on:
   push:
     branches:
-      - schema-level
+      - cherry-pick
   workflow_dispatch:
 
 permissions:
