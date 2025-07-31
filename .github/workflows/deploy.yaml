@@ -1,4 +1,4 @@
-name: ❄️ Snowflake Full Deploy with Auto-Rollback
+name: Snowflake Full Deploy with Auto-Rollback
 
 on:
   push:
