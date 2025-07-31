@@ -1,6 +1,8 @@
-CREATE OR REPLACE TABLE sales.orders2 (
-  order_id INT,
-  customer_id INT,
-  order_date DATE,
-  total_amount NUMBER(10,2)
+create or replace TABLE DEVOPS.SALES.ORDERS2 (
+	ORDER_ID NUMBER(38,0),
+	CUSTOMER_ID NUMBER(38,0),
+	ORDER_DATE DATE,
+	TOTAL_AMOUNT NUMBER(10,2),
+	NAME VARCHAR(20),
+	NAME2 VARCHAR(20)
 );
