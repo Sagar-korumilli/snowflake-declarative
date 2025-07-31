@@ -118,39 +118,38 @@ jobs:
         id: deploy_migrations
         shell: bash
         run: |
+          set -o pipefail
+          set +e
           for d in snowflake/*; do
             if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
               schema_name=$(basename "$d")
               echo "🚀 Deploying schema $schema_name"
-              # enable pipefail, disable errexit to capture rc
-              set -o pipefail
-              set +e
 
-              # run deployment and log
+              # Run schemachange and log
               schemachange deploy \
                 --connections-file connections.toml \
                 --connection-name connections \
                 --root-folder $d \
                 --change-history-table "${SNOWFLAKE_DATABASE}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
-                --create-change-history-table -v | tee migration.log
+                --create-change-history-table -v 2>&1 | tee migration.log
 
               rc=${PIPESTATUS[0]}
-              set -e
               if [ $rc -ne 0 ]; then
-                # Print failure context explicitly
                 echo "❌ Migration failed in schema: $schema_name"
-                failed_script=$(grep -oP 'Failed to execute \K[^\.]+(?=\.sql)' migration.log || true)
+                # Improved extraction: match full script name including .sql
+                failed_script_full=$(grep -oP 'Failed to execute \K[\w\d_]+\.sql' migration.log || true)
+                failed_script=${failed_script_full%.sql}
                 table_name=$(echo "$failed_script" | sed -E 's/^V[0-9]+__([A-Za-z0-9]+).*/\1/')
                 echo "❌ Failed script: $failed_script"
                 echo "❌ Derived table: $table_name"
 
-                # Export outputs for rollback
                 echo "failed_schema=$schema_name" >> $GITHUB_OUTPUT
                 echo "failed_table=$table_name" >> $GITHUB_OUTPUT
                 exit $rc
               fi
             fi
           done
+          set -e
 
       - name: Snapshot updated DDL baseline
         if: success()
@@ -193,7 +192,6 @@ jobs:
       - name: Auto-rollback only failed object
         run: |
           echo "Rollback timestamp: $ROLLBACK_TIMESTAMP"
-          # Show which schema/table will be rolled back
           SCHEMA="${{ needs.deploy.outputs.failed_schema }}"
           TABLE="${{ needs.deploy.outputs.failed_table }}"
           echo "❗ Schema to rollback: $SCHEMA"
