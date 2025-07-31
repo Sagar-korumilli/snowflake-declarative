@@ -43,26 +43,40 @@ def get_snowflake_connection():
 
 def rollback_table(conn, database, schema, table, timestamp):
     cursor = conn.cursor()
+
     qualified_table = f'"{database}"."{schema}"."{table}"'
-    sql = f"""
-    CREATE OR REPLACE TABLE {qualified_table} AS
-    SELECT * FROM {qualified_table} AT (TIMESTAMP => '{timestamp}');
-    """
-    print(f"Rolling back table {qualified_table} to timestamp {timestamp}...")
-    cursor.execute(sql)
+    backup_table = f'"{database}"."{schema}"."{table}_backup_for_rollback"'
+
+    try:
+        print(f"Creating backup table {backup_table} from {qualified_table} at timestamp {timestamp}...")
+        cursor.execute(f"""
+            CREATE OR REPLACE TABLE {backup_table} AS
+            SELECT * FROM {qualified_table} AT (TIMESTAMP => '{timestamp}');
+        """)
+
+        print(f"Restoring main table {qualified_table} from backup {backup_table}...")
+        # You can choose either replace or truncate+insert; here truncate + insert is used:
+        cursor.execute(f"TRUNCATE TABLE {qualified_table};")
+        cursor.execute(f"INSERT INTO {qualified_table} SELECT * FROM {backup_table};")
+
+    finally:
+        print(f"Dropping backup table {backup_table}...")
+        # Drop the backup table regardless of previous success/failure
+        cursor.execute(f"DROP TABLE IF EXISTS {backup_table};")
+
     cursor.close()
 
 def main():
-    parser = argparse.ArgumentParser(description="Snowflake Time Travel Rollback Script")
+    parser = argparse.ArgumentParser(description="Snowflake Time Travel Rollback Script with backup table")
     parser.add_argument("--timestamp", required=True, help="Rollback timestamp (format YYYY-MM-DD HH24:MI:SS)")
     parser.add_argument("--database", required=True, help="Snowflake database name")
-    parser.add_argument("--schema", default="PUBLIC", help="Schema name, default PUBLIC")
-    parser.add_argument("--tables", nargs='*', default=[], help="List of tables to rollback. If none given, rollback all in schema.")
+    parser.add_argument("--schema", default="PUBLIC", help="Schema name (default PUBLIC)")
+    parser.add_argument("--tables", nargs='*', default=[], help="List of tables to rollback. If omitted, all tables in schema are rolled back.")
     args = parser.parse_args()
 
     conn = get_snowflake_connection()
 
-    # If no tables specified, get all tables in schema
+    # If no tables specified, retrieve all tables in the schema
     if not args.tables:
         cursor = conn.cursor()
         cursor.execute(f"""
@@ -80,9 +94,13 @@ def main():
         sys.exit(0)
 
     for table in args.tables:
-        rollback_table(conn, args.database, args.schema, table, args.timestamp)
+        try:
+            rollback_table(conn, args.database, args.schema, table, args.timestamp)
+            print(f"Rollback successful for table: {table}")
+        except Exception as e:
+            print(f"❌ Error rolling back table {table}: {e}", file=sys.stderr)
 
-    print("Rollback completed successfully.")
+    print("Rollback process completed.")
     conn.close()
 
 if __name__ == "__main__":
