@@ -30,34 +30,32 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-  
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-  
+
       - name: Install dependencies
         run: pip install snowflake-connector-python cryptography
-  
+
       - name: Get Snowflake Timestamp
         id: get_ts
         run: |
           python scripts/get_snowflake_timestamp.py > rollback_timestamp.txt
-          cat rollback_timestamp.txt
-          ts=$(cat rollback_timestamp.txt)
+          ts=$(<rollback_timestamp.txt)
           echo "rollback_timestamp=$ts" >> $GITHUB_OUTPUT
 
 
-  # Step 2: Deploy job that runs your current deployment logic
+  # Step 2: Deploy job that also captures which schema/table failed
   deploy:
     needs: capture_timestamp
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      failed_schema: ${{ steps.deploy_migrations.outputs.failed_schema }}
+      failed_table:  ${{ steps.deploy_migrations.outputs.failed_table }}
     env:
-      GIT_USER_NAME:    "Sagar-korumilli"
-      GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-      GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-
       SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
       SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
@@ -65,7 +63,6 @@ jobs:
       SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
       SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
       SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-
       ROLLBACK_TIMESTAMP:              ${{ needs.capture_timestamp.outputs.rollback_timestamp }}
     steps:
       - name: Checkout code
@@ -120,20 +117,41 @@ jobs:
         run: python scripts/sql_risk_validator.py --snowflake-root snowflake/
 
       - name: Deploy versioned migrations
+        id: deploy_migrations
+        shell: bash
         run: |
           for d in snowflake/*; do
             if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
               schema_name=$(basename "$d")
+              echo "🚀 Deploying schema $schema_name"
+              set -o pipefail
+
+              # Run schemachange and tee both stdout+stderr into a log
               schemachange deploy \
                 --connections-file connections.toml \
                 --connection-name connections \
                 --root-folder $d \
-                --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
-                --create-change-history-table -v
+                --change-history-table "${SNOWFLAKE_DATABASE}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
+                --create-change-history-table -v 2>&1 \
+                | tee migration.log
+
+              rc=${PIPESTATUS[0]}
+              if [ $rc -ne 0 ]; then
+                # Extract the failing script name (without .sql)
+                failed_script=$(grep -oP 'Failed to execute \K.*(?=\.sql)' migration.log || true)
+                # Derive a table name from script: take the part after "__" and before any "_"
+                table_name=$(echo "$failed_script" \
+                  | sed -E 's/^V[0-9]+__([A-Za-z0-9]+).*/\1/')
+
+                echo "failed_schema=$schema_name" >> $GITHUB_OUTPUT
+                echo "failed_table=$table_name"  >> $GITHUB_OUTPUT
+                exit $rc
+              fi
             fi
           done
 
       - name: Snapshot updated DDL baseline
+        if: success()
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
@@ -147,8 +165,9 @@ jobs:
       - name: Clean up temporary files
         if: always()
         run: |
-          rm -f key.pem connections.toml
-          echo "✔️ Completed Snowflake deploy for all schema folders under snowflake/."
+          rm -f key.pem connections.toml migration.log
+          echo "✔️ Completed Snowflake deploy for all schemas."
+
 
   # Step 3: Automatic rollback job runs only if deploy fails
   rollback:
@@ -179,7 +198,12 @@ jobs:
       - name: Install dependencies
         run: pip install snowflake-connector-python cryptography
 
-      - name: Automatic Rollback using Time Travel
+      - name: Auto-rollback only failed object
         run: |
           echo "Rollback timestamp: $ROLLBACK_TIMESTAMP"
-          python scripts/rollback_time_travel.py --timestamp "$ROLLBACK_TIMESTAMP" --database "$SNOWFLAKE_DATABASE"
+          echo "Rolling back ${FAILED_SCHEMA}.${FAILED_TABLE}..."
+          python scripts/rollback_time_travel.py \
+            --timestamp "$ROLLBACK_TIMESTAMP" \
+            --database "$SNOWFLAKE_DATABASE" \
+            --schema "${{ needs.deploy.outputs.failed_schema }}" \
+            --tables "${{ needs.deploy.outputs.failed_table }}"
