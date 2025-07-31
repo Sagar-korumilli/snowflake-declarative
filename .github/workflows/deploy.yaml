@@ -43,6 +43,7 @@ jobs:
         id: get_ts
         run: |
           python scripts/get_snowflake_timestamp.py > rollback_timestamp.txt
+          cat rollback_timestamp.txt
           ts=$(cat rollback_timestamp.txt)
           echo "rollback_timestamp=$ts" >> $GITHUB_OUTPUT
 
