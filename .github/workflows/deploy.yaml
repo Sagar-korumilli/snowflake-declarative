@@ -11,12 +11,6 @@ permissions:
   pull-requests: write
   actions: read
 
-env:
-  # Git identity (used by backup_ddl.py)
-  GIT_USER_NAME:    "Sagar-korumilli"
-  GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-  GIT_PUSH_TOKEN:  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-
 jobs:
   # Step 1: Capture rollback timestamp before deployment
   capture_timestamp:
@@ -53,9 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      GIT_USER_NAME:    ${{ env.GIT_USER_NAME }}
-      GIT_USER_EMAIL:   ${{ env.GIT_USER_EMAIL }}
-      GIT_PUSH_TOKEN:  ${{ env.GIT_PUSH_TOKEN }}
+      GIT_USER_NAME:    "Sagar-korumilli"
+      GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
+      GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
       SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
@@ -66,7 +60,6 @@ jobs:
       SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
 
       ROLLBACK_TIMESTAMP:              ${{ needs.capture_timestamp.outputs.rollback_timestamp }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -134,14 +127,6 @@ jobs:
           done
 
       - name: Snapshot updated DDL baseline
-        env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: python scripts/backup_ddl.py --snowflake-root snowflake/
 
       - name: Clean up temporary files
@@ -164,7 +149,6 @@ jobs:
       SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
       SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
       ROLLBACK_TIMESTAMP:              ${{ needs.capture_timestamp.outputs.rollback_timestamp }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -181,15 +165,6 @@ jobs:
         run: pip install snowflake-connector-python cryptography
 
       - name: Automatic Rollback using Time Travel
-        env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           echo "Rollback timestamp: $ROLLBACK_TIMESTAMP"
-          python scripts/rollback_time_travel.py --timestamp "$ROLLBACK_TIMESTAMP" --database "${{ secrets.SNOWFLAKE_DATABASE }}"
-
+          python scripts/rollback_time_travel.py --timestamp "$ROLLBACK_TIMESTAMP" --database "$SNOWFLAKE_DATABASE"
