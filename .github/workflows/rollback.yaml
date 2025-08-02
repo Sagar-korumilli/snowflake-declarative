@@ -35,7 +35,7 @@ jobs:
 
       - name: Execute rollback
         run: |
-          python backup_rollback.py \
+          python rollback.py \
             --repo "${{ github.repository }}" \
             --token "${{ env.GITHUB_TOKEN }}" \
             --branch "${{ github.event.inputs.branch }}"
