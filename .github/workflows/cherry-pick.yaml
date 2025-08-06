@@ -1,4 +1,4 @@
-name: Selective Cherry-Pick Deployment with Manual PR
+name: Manual Cherry-Pick & PR
 
 on:
   workflow_dispatch:
@@ -7,29 +7,24 @@ on:
         description: 'Comma-separated commit hashes to cherry-pick'
         required: true
       source_branch:
-        description: 'Source branch to cherry-pick from'
+        description: 'Source branch (e.g., dev)'
         required: true
         default: 'dev'
       target_branch:
-        description: 'Target branch to push cherry-picks to'
+        description: 'Target branch (e.g., QA)'
         required: true
         default: 'QA'
       pr_base_branch:
         description: 'PR base branch (e.g., release)'
         required: true
         default: 'release'
-      dry_run:
-        description: 'Dry run mode (true/false)'
-        required: false
-        default: 'false'
 
 jobs:
-  cherry-pick-and-pr:
+  cherry_pick:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -46,35 +41,19 @@ jobs:
 
       - name: Cherry-pick commits
         run: |
-          for commit in $(echo "${{ github.event.inputs.commit_hashes }}" | tr ',' ' '); do
-            echo "Cherry-picking $commit..."
-            git cherry-pick $commit || {
-              echo "❌ Conflict with $commit. Aborting."
-              git cherry-pick --abort
-              exit 1
-            }
+          for hash in $(echo "${{ github.event.inputs.commit_hashes }}" | tr ',' '\n'); do
+            git cherry-pick $hash || exit 1
           done
 
-      - name: Push changes
-        if: ${{ github.event.inputs.dry_run != 'true' }}
-        run: |
-          git push origin ${{ github.event.inputs.target_branch }}
+      - name: Push cherry-pick changes
+        run: git push origin ${{ github.event.inputs.target_branch }}
 
-      - name: Authenticate GH CLI
-        if: ${{ github.event.inputs.dry_run != 'true' }}
-        run: |
-          echo "${{ secrets.PERSONAL_ACCESS_TOKEN }}" | gh auth login --with-token
-
-      - name: Create PR using gh CLI
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+      - name: Create PR using CLI
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           gh pr create \
-            --title "Cherry-pick: [${{ github.event.inputs.commit_hashes }}] → ${{ github.event.inputs.target_branch }}" \
-            --body "Auto cherry-picked commits: ${{ github.event.inputs.commit_hashes }}" \
-            --head "${{ github.event.inputs.target_branch }}" \
-            --base "${{ github.event.inputs.pr_base_branch }}" \
-            --label "auto-cherry-pick"
-
-      - name: Dry run notice
-        if: ${{ github.event.inputs.dry_run == 'true' }}
-        run: echo "🧪 Dry run: skipped pushing and PR creation."
+            --base ${{ github.event.inputs.pr_base_branch }} \
+            --head ${{ github.event.inputs.target_branch }} \
+            --title "Cherry-pick to ${{ github.event.inputs.target_branch }}" \
+            --body "Cherry-picked: ${{ github.event.inputs.commit_hashes }}"
