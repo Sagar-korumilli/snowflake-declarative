@@ -23,7 +23,7 @@ on:
 
 jobs:
   selective_pr:
-    name: List, Cherry-pick & Create PR
+    name: Cherry-pick & Create PR
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,22 +38,20 @@ jobs:
 
       - name: Fetch branches
         run: |
-          # Fetch remote branches without modifying local checked-out branch
           git fetch origin ${{ github.event.inputs.source_branch }}
           git fetch origin ${{ github.event.inputs.target_branch }}
 
       - name: Show available commits
         run: |
-          echo "Commits in ${{ github.event.inputs.source_branch }} not yet in ${{ github.event.inputs.target_branch }}:"
+          echo "Commits in '${{ github.event.inputs.source_branch }}' not yet in '${{ github.event.inputs.target_branch }}':"
           git log --oneline origin/${{ github.event.inputs.target_branch }}..origin/${{ github.event.inputs.source_branch }}
 
-      - name: Prepare selective branch under protection
+      - name: Prepare PR branch under protection rules
         run: |
           TIMESTAMP=$(date +"%Y%m%d%H%M%S")
-          # derive a new branch name by appending prefix and timestamp (avoid slash conflicts)
           SAFE_SRC=$(echo "${{ github.event.inputs.source_branch }}" | tr '/' '-')
           PR_BRANCH="${SAFE_SRC}-${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
-          # branch protection allows pattern <namespace>/*, so ensure source_branch includes namespace (e.g. feature/)
+          # Create branch from target
           git checkout -b $PR_BRANCH origin/${{ github.event.inputs.target_branch }}
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
 
@@ -61,7 +59,7 @@ jobs:
         run: |
           IFS=',' read -ra SHAS <<< "${{ github.event.inputs.commits }}"
           for sha in "${SHAS[@]}"; do
-            git cherry-pick $sha || exit 1
+            git cherry-pick "$sha" || { echo "Cherry-pick failed at $sha"; exit 1; }
           done
 
       - name: Push PR branch
@@ -70,13 +68,14 @@ jobs:
       - name: Create Pull Request via GitHub CLI
         run: |
           # Install GitHub CLI
-          sudo apt-get update && sudo apt-get install -y gh
-          # Authenticate using GITHUB_TOKEN
+          sudo apt-get update -qq
+          sudo apt-get install -y gh
+          # Authenticate GitHub CLI
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
           # Create the PR
           gh pr create \
-            --base ${{ github.event.inputs.target_branch }} \
-            --head ${{ env.PR_BRANCH }} \
+            --base "${{ github.event.inputs.target_branch }}" \
+            --head "$PR_BRANCH" \
             --title "Selective PR: ${{ github.event.inputs.commits }}" \
-            --body "Cherry-picked commits from '${{ github.event.inputs.source_branch }}':
-${{ github.event.inputs.commits }}"
+            --body "Cherry-picked commits from '${{ github.event.inputs.source_branch }}':\n${{ github.event.inputs.commits }}"
+
