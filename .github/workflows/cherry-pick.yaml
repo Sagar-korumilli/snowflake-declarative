@@ -1,59 +1,74 @@
-name: Manual Cherry-Pick & PR
+name: Manual Cherry-Pick and PR
 
 on:
   workflow_dispatch:
     inputs:
       commit_hashes:
-        description: 'Comma-separated commit hashes to cherry-pick'
+        description: "Comma-separated commit hashes to cherry-pick"
+        required: true
+      target_branch:
+        description: "Target branch (e.g. schema-level)"
         required: true
       source_branch:
-        description: 'Source branch (e.g., dev)'
+        description: "Source branch to cherry-pick from (e.g. from-schema-level)"
         required: true
-        default: 'dev'
-      target_branch:
-        description: 'Target branch (e.g., QA)'
-        required: true
-        default: 'QA'
-      pr_base_branch:
-        description: 'PR base branch (e.g., release)'
-        required: true
-        default: 'release'
 
 jobs:
-  cherry_pick:
+  cherry-pick-and-pr:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Required for cherry-picking
 
-      - name: Configure Git
+      - name: Set Git identity
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Fetch all branches
-        run: git fetch --all
+        run: |
+          git fetch origin ${{ github.event.inputs.source_branch }}
+          git fetch origin ${{ github.event.inputs.target_branch }}
 
-      - name: Checkout target branch
-        run: git checkout ${{ github.event.inputs.target_branch }}
+      - name: Create temp branch from target
+        run: |
+          TEMP_BRANCH="cherry-pick-$(date +%s)"
+          echo "TEMP_BRANCH=$TEMP_BRANCH" >> $GITHUB_ENV
+
+          git checkout ${{ github.event.inputs.target_branch }}
+          git checkout -b $TEMP_BRANCH
 
       - name: Cherry-pick commits
         run: |
           for hash in $(echo "${{ github.event.inputs.commit_hashes }}" | tr ',' '\n'); do
-            git cherry-pick $hash || exit 1
+            echo "Cherry-picking $hash..."
+            git cherry-pick $hash || {
+              if git status | grep -q "You are currently cherry-picking"; then
+                echo "Empty or failed cherry-pick. Skipping..."
+                git cherry-pick --skip
+              else
+                echo "Cherry-pick failed. Exiting."
+                exit 1
+              fi
+            }
           done
 
-      - name: Push cherry-pick changes
-        run: git push origin ${{ github.event.inputs.target_branch }}
+      - name: Push temp branch
+        run: |
+          git push origin $TEMP_BRANCH
 
-      - name: Create PR using CLI
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      - name: Create PR
         run: |
           gh pr create \
-            --base ${{ github.event.inputs.pr_base_branch }} \
-            --head ${{ github.event.inputs.target_branch }} \
             --title "Cherry-pick to ${{ github.event.inputs.target_branch }}" \
-            --body "Cherry-picked: ${{ github.event.inputs.commit_hashes }}"
+            --body "Cherry-picked from `${{ github.event.inputs.source_branch }}`\nCommits: `${{ github.event.inputs.commit_hashes }}`" \
+            --base ${{ github.event.inputs.target_branch }} \
+            --head $TEMP_BRANCH
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      # Optional: Automatically delete branch after PR is merged
+      # GitHub can be configured to auto-delete merged branches in repo settings
