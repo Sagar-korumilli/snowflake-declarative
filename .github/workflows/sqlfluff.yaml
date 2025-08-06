@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened]
     paths:
-      - 'snowflake/*'   # Only trigger on changes to .sql files under /snowflake/
+      - 'snowflake/**/*.sql'   # Triggers only for .sql under any schema
 
 jobs:
   lint-sql:
@@ -22,7 +22,7 @@ jobs:
       - name: Install SQLFluff
         run: pip install sqlfluff
 
-      - name: Get changed SQL files under /snowflake
+      - name: Find changed .sql files in /snowflake
         id: changed-files
         run: |
           git fetch origin ${{ github.base_ref }}
@@ -35,5 +35,5 @@ jobs:
             cat sqlfiles.txt
             xargs -a sqlfiles.txt sqlfluff lint --dialect snowflake
           else
-            echo "No SQL files changed inside /snowflake directory."
+            echo "No changed SQL files under /snowflake"
           fi
