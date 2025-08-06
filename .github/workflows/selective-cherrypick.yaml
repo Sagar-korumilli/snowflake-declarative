@@ -31,8 +31,10 @@ jobs:
 
       - name: Fetch branches
         run: |
-           git fetch origin ${{ inputs.source_branch }}
-           git fetch origin ${{ inputs.target_branch }}
+          # Fetch remote branches without modifying local checked-out branch
+          git fetch origin ${{ github.event.inputs.source_branch }}
+          git fetch origin ${{ github.event.inputs.target_branch }}
+
       - name: Show available commits
         run: |
           echo "Commits in ${{ github.event.inputs.source_branch }} not yet in ${{ github.event.inputs.target_branch }}:"
@@ -41,8 +43,10 @@ jobs:
       - name: Prepare selective branch under protection
         run: |
           TIMESTAMP=$(date +"%Y%m%d%H%M%S")
-          # branch protection allows branches like <source_branch>/*
-          PR_BRANCH="${{ github.event.inputs.source_branch }}/${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
+          # derive a new branch name by appending prefix and timestamp (avoid slash conflicts)
+          SAFE_SRC=$(echo "${{ github.event.inputs.source_branch }}" | tr '/' '-')
+          PR_BRANCH="${SAFE_SRC}-${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
+          # branch protection allows pattern <namespace>/*, so ensure source_branch includes namespace (e.g. feature/)
           git checkout -b $PR_BRANCH origin/${{ github.event.inputs.target_branch }}
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
 
