@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened]
     paths:
-      - 'snowflake/**/*.sql'   # Only trigger on changes to .sql files under /snowflake/
+      - 'snowflake/*'   # Only trigger on changes to .sql files under /snowflake/
 
 jobs:
   lint-sql:
