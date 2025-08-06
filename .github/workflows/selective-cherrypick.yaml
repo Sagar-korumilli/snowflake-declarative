@@ -15,33 +15,39 @@ on:
         description: 'Comma-separated list of commit SHAs to cherry-pick'
         required: true
       pr_branch_prefix:
-        description: 'Prefix for the temporary PR branch'
+        description: 'Subpath under source_branch for PR (must match branch protection, e.g., "selective")'
         required: false
-        default: 'selective-pr'
+        default: 'selective'
 
 jobs:
   selective_pr:
-    name: Cherry-pick & Create PR
+    name: List, Cherry-pick & Create PR
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # fetch all history for cherry-picks and other branches
+          fetch-depth: 0
 
-      - name: Prepare branches and temp PR branch
+      - name: Fetch branches
         run: |
-          # Fetch both source and target branches
           git fetch origin ${{ github.event.inputs.source_branch }}:${{ github.event.inputs.source_branch }}
           git fetch origin ${{ github.event.inputs.target_branch }}:${{ github.event.inputs.target_branch }}
-          
-          # Create a new branch from target
+
+      - name: Show available commits
+        run: |
+          echo "Commits in ${{ github.event.inputs.source_branch }} not yet in ${{ github.event.inputs.target_branch }}:"
+          git log --oneline origin/${{ github.event.inputs.target_branch }}..origin/${{ github.event.inputs.source_branch }}
+
+      - name: Prepare selective branch under protection
+        run: |
           TIMESTAMP=$(date +"%Y%m%d%H%M%S")
-          PR_BRANCH="${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
+          # branch protection allows branches like <source_branch>/*
+          PR_BRANCH="${{ github.event.inputs.source_branch }}/${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
           git checkout -b $PR_BRANCH origin/${{ github.event.inputs.target_branch }}
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
 
-      - name: Cherry-pick commits from source
+      - name: Cherry-pick selected commits
         run: |
           IFS=',' read -ra SHAS <<< "${{ github.event.inputs.commits }}"
           for sha in "${SHAS[@]}"; do
@@ -49,8 +55,7 @@ jobs:
           done
 
       - name: Push PR branch
-        run: |
-          git push origin $PR_BRANCH
+        run: git push origin $PR_BRANCH
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
