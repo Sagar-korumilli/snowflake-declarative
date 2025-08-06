@@ -2,9 +2,9 @@ name: SQLFluff Lint
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
     paths:
-      - 'snowflake/**/*.sql'   # Triggers only for .sql under any schema
+      - 'snowflake/**/*.sql'
 
 jobs:
   lint-sql:
@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,10 +25,9 @@ jobs:
         run: pip install sqlfluff
 
       - name: Find changed .sql files in /snowflake
-        id: changed-files
         run: |
           git fetch origin ${{ github.base_ref }}
-          git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^snowflake/.*\.sql$' > sqlfiles.txt || true
+          git diff --name-only origin/${{ github.base_ref }}...${{ github.sha }} | grep '^snowflake/.*\.sql$' > sqlfiles.txt || true
 
       - name: Lint changed SQL files
         run: |
