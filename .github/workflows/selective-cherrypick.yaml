@@ -1,0 +1,84 @@
+# This workflow must be committed to your default branch under .github/workflows
+name: Selective Cherry-Pick PR
+
+permissions:
+  contents: write      # allow push
+  pull-requests: write # allow auto-merge
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Branch to pick commits from (e.g., dev or feature/x)'
+        required: true
+        default: 'dev'
+      target_branch:
+        description: 'Branch to merge into'
+        required: true
+        default: 'release'
+      commits:
+        description: 'Comma-separated list of commit SHAs to cherry-pick'
+        required: true
+      pr_branch_prefix:
+        description: 'Prefix for the PR branch under source (e.g., "selective")'
+        required: false
+        default: 'selective'
+
+jobs:
+  selective_pr:
+    name: Cherry-pick & Create PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch branches
+        run: |
+          git fetch origin ${{ github.event.inputs.source_branch }}
+          git fetch origin ${{ github.event.inputs.target_branch }}
+
+      - name: Show available commits
+        run: |
+          echo "Commits in '${{ github.event.inputs.source_branch }}' not in '${{ github.event.inputs.target_branch }}':"
+          git log --oneline origin/${{ github.event.inputs.target_branch }}..origin/${{ github.event.inputs.source_branch }}
+
+      - name: Prepare safe PR branch name
+        run: |
+          TIMESTAMP=$(date +"%Y%m%d%H%M%S")
+          SAFE_SOURCE=$(echo "${{ github.event.inputs.source_branch }}" | tr '/' '-')
+          PR_BRANCH="${SAFE_SOURCE}/selective-${TIMESTAMP}"
+          git checkout -b "$PR_BRANCH" "origin/${{ github.event.inputs.target_branch }}"
+          echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
+
+      - name: Cherry-pick commits
+        run: |
+          IFS=',' read -ra SHAS <<< "${{ github.event.inputs.commits }}"
+          for sha in "${SHAS[@]}"; do
+            git cherry-pick "$sha" || { echo "Cherry-pick failed at $sha"; exit 1; }
+          done
+
+      - name: Push PR branch
+        run: |
+          git push origin "$PR_BRANCH"
+          echo "Pushed branch $PR_BRANCH"
+
+      - name: Create and merge PR via GitHub CLI
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y gh
+          echo "${{ secrets.PERSONAL_ACCESS_TOKEN }}" | gh auth login --with-token
+          gh pr create \
+            --base "${{ github.event.inputs.target_branch }}" \
+            --head "$PR_BRANCH" \
+            --title "Selective PR: ${{ github.event.inputs.commits }}" \
+            --body "Cherry-picked from '${{ github.event.inputs.source_branch }}':\n${{ github.event.inputs.commits }}"
+          gh pr merge "$PR_BRANCH" --merge --auto --admin
