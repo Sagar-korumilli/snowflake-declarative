@@ -1,3 +1,5 @@
+# This workflow must be committed to your default branch (e.g., main) under .github/workflows
+# Then, navigate to the Actions tab, select "Selective Cherry-Pick PR", and click "Run workflow" to dispatch manually.
 name: Selective Cherry-Pick PR
 
 on:
