@@ -52,10 +52,11 @@ jobs:
           echo "Commits in '${{ github.event.inputs.source_branch }}' not in '${{ github.event.inputs.target_branch }}':"
           git log --oneline origin/${{ github.event.inputs.target_branch }}..origin/${{ github.event.inputs.source_branch }}
 
-      - name: Prepare PR branch under source path
+      - name: Prepare safe PR branch name
         run: |
           TIMESTAMP=$(date +"%Y%m%d%H%M%S")
-          PR_BRANCH="${{ github.event.inputs.source_branch }}/${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
+          SAFE_SOURCE=$(echo "${{ github.event.inputs.source_branch }}" | tr '/' '-')
+          PR_BRANCH="${SAFE_SOURCE}/${{ github.event.inputs.pr_branch_prefix }}-${TIMESTAMP}"
           git checkout -b "$PR_BRANCH" "origin/${{ github.event.inputs.target_branch }}"
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
 
