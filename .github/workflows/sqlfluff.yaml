@@ -2,9 +2,9 @@ name: SQLFluff Lint
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
     paths:
-      - 'snowflake/**/*.sql'
+      - 'snowflake/**/*.sql'   # Trigger only if SQL files change under /snowflake
 
 jobs:
   lint-sql:
@@ -13,8 +13,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,17 +22,22 @@ jobs:
       - name: Install SQLFluff
         run: pip install sqlfluff
 
-      - name: Find changed .sql files in /snowflake
+      - name: Find added/modified .sql files under /snowflake
+        id: changed-files
         run: |
           git fetch origin ${{ github.base_ref }}
-          git diff --name-only origin/${{ github.base_ref }}...${{ github.sha }} | grep '^snowflake/.*\.sql$' > sqlfiles.txt || true
+          git diff --diff-filter=AM --name-only origin/${{ github.base_ref }}...${{ github.sha }} \
+            | grep '^snowflake/.*\.sql$' > sqlfiles.txt || true
+          echo "Changed SQL files:"
+          cat sqlfiles.txt || echo "None"
 
       - name: Lint changed SQL files
         run: |
           if [[ -s sqlfiles.txt ]]; then
             echo "Linting these SQL files:"
             cat sqlfiles.txt
-            xargs -a sqlfiles.txt sqlfluff lint --dialect snowflake
+            # Only lint files that still exist
+            xargs -a sqlfiles.txt -r -I{} bash -c 'test -f "{}" && sqlfluff lint --dialect snowflake "{}"'
           else
             echo "No changed SQL files under /snowflake"
           fi
