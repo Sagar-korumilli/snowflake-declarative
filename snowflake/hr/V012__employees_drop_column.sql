@@ -1,1 +1,1 @@
-Alter table hr.employees drop column Name11 Varchar(20);
+Alter table hr.employees drop column Name11;
