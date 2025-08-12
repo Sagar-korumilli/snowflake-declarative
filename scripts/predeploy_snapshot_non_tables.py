@@ -10,19 +10,17 @@ import snowflake.connector
 # 1. Connect to Snowflake using private key auth
 # -----------------------------------------------------------
 def get_snowflake_connection():
-    tmp_key_path = "/tmp/snowflake_rsa_key.pem"
-    with open(tmp_key_path, "w") as key_file:
-        key_file.write(os.environ["SNOWFLAKE_PRIVATE_KEY"])
-    os.chmod(tmp_key_path, 0o600)
-
+    creds = {k:os.getenv(k) for k in ['SNOWFLAKE_USER','SNOWFLAKE_ACCOUNT','SNOWFLAKE_ROLE','SNOWFLAKE_WAREHOUSE','SNOWFLAKE_DATABASE','SNOWFLAKE_PRIVATE_KEY','SNOWFLAKE_PRIVATE_KEY_PASSPHRASE']}
+    if not all(creds.values()):
+        missing=[k for k,v in creds.items() if not v]
+        raise EnvironmentError(f"Missing Snowflake vars: {missing}")
+    with tempfile.NamedTemporaryFile('w+',delete=False,suffix='.pem') as f:
+        f.write(creds['SNOWFLAKE_PRIVATE_KEY'])
+        keypath=f.name
     return snowflake.connector.connect(
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        user=os.environ["SNOWFLAKE_USER"],
-        private_key_file=tmp_key_path,
-        private_key_file_pwd=os.environ["SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"],
-        role=os.environ["SNOWFLAKE_ROLE"],
-        warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
-        database=os.environ["SNOWFLAKE_DATABASE"]
+        user=creds['SNOWFLAKE_USER'], account=creds['SNOWFLAKE_ACCOUNT'], role=creds['SNOWFLAKE_ROLE'],
+        warehouse=creds['SNOWFLAKE_WAREHOUSE'], database=creds['SNOWFLAKE_DATABASE'],
+        private_key_file=keypath, private_key_file_pwd=creds['SNOWFLAKE_PRIVATE_KEY_PASSPHRASE']
     )
 
 
