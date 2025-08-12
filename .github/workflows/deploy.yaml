@@ -58,7 +58,7 @@ jobs:
           echo "Changed files:"
           git --no-pager diff --name-only ${{ github.event.before }} ${{ github.sha }} | sed -n '1,200p' || true
           # run snapshot script - outputs files to rollback/pr-<run_id> (not committed)
-          python tools/predeploy_snapshot_non_tables.py --out rollback --tag "${{ github.run_id }}"
+          python scripts/predeploy_snapshot_non_tables.py --out rollback --tag "${{ github.run_id }}"
 
       - name: Validate Snowflake env vars
         env:
