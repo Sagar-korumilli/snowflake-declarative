@@ -1,6 +1,8 @@
-CREATE OR REPLACE TABLE sales.orders2 (
-  order_id INT,
-  customer_id INT,
-  order_date DATE,
-  total_amount NUMBER(10,2)
-);
+CREATE OR REPLACE VIEW DEVOPS.SALES.V_ORDERS2 AS
+SELECT
+    ORDER_ID,
+    CUSTOMER_ID,
+    ORDER_DATE,
+    TOTAL_AMOUNT,
+    NAME
+FROM DEVOPS.SALES.ORDERS;
