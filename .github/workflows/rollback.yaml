@@ -64,7 +64,7 @@ jobs:
           PATH_FILTER="${{ github.event.inputs.path }}"
           DRY="${{ github.event.inputs.dry_run }}"
 
-          CMD="python scripts/rollback_non_table_only.py --repo \"$REPO\" --token \"${{ secrets.PERSONAL_ACCESS_TOKEN }}\" --path \"$PATH_FILTER\""
+          CMD="python scripts/predeploy_snapshot_non_tables.py --repo \"$REPO\" --token \"${{ secrets.PERSONAL_ACCESS_TOKEN }}\" --path \"$PATH_FILTER\""
           if [ -n "$PR_INPUT" ]; then
             CMD="$CMD --pr $PR_INPUT"
           fi
