@@ -40,26 +40,7 @@ jobs:
           pip install --upgrade pip
           pip install schemachange==4.0.1 snowflake-connector-python GitPython requests
 
-      # -------------------------
-      # NEW: Snapshot pre-merge DDL (non-tables)
-      # -------------------------
-      - name: Snapshot pre-merge DDL (non-tables)
-        id: snapshot
-        env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: |
-          # detect changed files between before and after commit (works on merges to schema-level)
-          echo "Changed files:"
-          git --no-pager diff --name-only ${{ github.event.before }} ${{ github.sha }} | sed -n '1,200p' || true
-          # run snapshot script - outputs files to rollback/pr-<run_id> (not committed)
-          python tools/predeploy_snapshot_non_tables.py --out rollback --tag "${{ github.run_id }}"
-
+     
       - name: Validate Snowflake env vars
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
