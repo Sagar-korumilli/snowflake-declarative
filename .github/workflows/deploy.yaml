@@ -40,7 +40,7 @@ jobs:
           pip install --upgrade pip
           pip install schemachange==4.0.1 snowflake-connector-python GitPython requests
 
-     
+          
       - name: Validate Snowflake env vars
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
