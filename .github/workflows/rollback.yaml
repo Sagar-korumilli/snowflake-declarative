@@ -41,7 +41,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
-          python scripts/rollback.py \
+          python scripts/predeploy_snapshot_non_tables.py \
             --repo "${{ github.repository }}" \
             --token "${{ secrets.PERSONAL_ACCESS_TOKEN }}" \
             --branch "${{ github.event.inputs.branch }}"
