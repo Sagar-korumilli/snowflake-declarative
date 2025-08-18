@@ -1,0 +1,8 @@
+CREATE OR REPLACE FUNCTION DEVOPS.SALES.GET_CUSTOMER_ORDER_COUNT(CUSTOMER_ID NUMBER)
+RETURNS NUMBER
+AS
+$$
+    -- Select the count of all records where the customer ID matches the input parameter.
+    SELECT COUNT(*) FROM DEVOPS.SALES.ORDERS
+    WHERE CUSTOMER_ID = CUSTOMER_ID;
+$$;
