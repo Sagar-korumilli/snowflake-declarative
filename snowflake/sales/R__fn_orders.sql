@@ -4,5 +4,5 @@ AS
 $$
     -- Select the count of all records where the customer ID matches the input parameter.
     SELECT COUNT(*) FROM DEVOPS.SALES.ORDERS
-    WHERE CUSTOMER_ID = CUSTOMER_ID;
+    WHERE CUSTOMER_ID = :CUSTOMER_ID;
 $$;
