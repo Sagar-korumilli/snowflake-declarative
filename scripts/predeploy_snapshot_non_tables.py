@@ -1,55 +1,41 @@
+
 #!/usr/bin/env python3
 """
-rollback_non_table_only.py
+rollback_non_table_only_with_git_target_branch.py
 
-Rollback non-table Snowflake objects (stages, views, materialized views,
-functions, procedures) using PR history as the source of truth.
+Like rollback_non_table_only.py but when we successfully restore an object
+in Snowflake from a previous file (or from clone+GET_DDL fallback), this script
+will also update the repository file on the PR's target branch (the branch the PR
+would merge into) so Git reflects the restored version.
 
-Behavior:
-- Inspect a GitHub PR (or the latest closed PR) to find SQL files changed in the
-  PR under a path (default `snowflake/`).
-- For each changed file that parses as a non-table repeatable (VIEW, MATERIALIZED VIEW,
-  STAGE, FUNCTION, PROCEDURE), attempt to restore the *previous file contents* from
-  the PR base commit (i.e. the repo state before the PR) and apply that SQL to
-  Snowflake.
-- If the file had no prior version (it was added in the PR) or previous content
-  cannot be fetched, fall back to cloning the schema at the PR merge timestamp and
-  using GET_DDL to recreate the prior object definition.
-- Does NOT touch tables or time-travel logic (table handling should remain in your
-  existing script).
+Semantics:
+- If a file existed before the PR -> attempt to apply that previous SQL to Snowflake,
+  and then update the file in the repo's target branch to that previous content.
+- If a file was newly added in the PR (status == "added") -> do nothing (skip).
+- If previous file content cannot be fetched but we can reconstruct via clone+GET_DDL,
+  apply that DDL to Snowflake and update the repo file to the reconstructed DDL.
+- --dry-run will simulate both Snowflake and GitHub steps (no writes).
 
-Usage:
-  export GH_TOKEN=...                         # GitHub token (repo read access)
-  export SNOWFLAKE_USER=...
-  export SNOWFLAKE_ACCOUNT=...
-  export SNOWFLAKE_PRIVATE_KEY='-----BEGIN PRIVATE KEY-----\n...'
-  export SNOWFLAKE_PRIVATE_KEY_PASSPHRASE='optional'
-  export SNOWFLAKE_DATABASE=MYDB
-
-  python rollback_non_table_only.py --repo myorg/myrepo --pr 123
-
-Notes:
-- Runner must have network access for GitHub API and Snowflake.
-- This script will execute DDL on Snowflake; test in dev first and use --dry-run.
-
+Requirements:
+- GH token must have repo write access for updating files on the target branch.
+- Snowflake credentials stored in env (see get_snowflake_conn_from_env()).
 """
 
 import os
 import argparse
 import tempfile
-import base64
 import requests
 import re
 import time
+import base64
 from datetime import datetime, timezone
 import snowflake.connector
 
 # -----------------------------
-# Simple GitHub PR inspector
+# Simple GitHub PR inspector + updater
 # -----------------------------
 class GitHubPRInspector:
     def __init__(self, repo, token, path_filter='snowflake/'):
-        # repo: owner/repo
         parts = repo.split('/')
         if len(parts) != 2:
             raise ValueError('repo must be owner/repo')
@@ -58,11 +44,16 @@ class GitHubPRInspector:
         self.path_filter = path_filter.rstrip('/') + '/'
         self.base_url = f'https://api.github.com/repos/{self.owner}/{self.repo}'
 
-    def _get(self, endpoint, params=None):
-        headers = {'Authorization': f'token {self.token}', 'Accept': 'application/vnd.github.v3.raw+json'}
+    def _get(self, endpoint, params=None, accept_raw=False):
+        headers = {
+            'Authorization': f'token {self.token}',
+            'Accept': 'application/vnd.github.v3.raw+json' if accept_raw else 'application/vnd.github.v3+json'
+        }
         resp = requests.get(f"{self.base_url}{endpoint}", headers=headers, params=params or {})
         if resp.status_code not in (200, 201):
             raise Exception(f"GitHub API {resp.status_code}: {resp.text}")
+        if accept_raw:
+            return resp.text
         return resp.json()
 
     def get_latest_closed_pr_number(self):
@@ -88,24 +79,63 @@ class GitHubPRInspector:
         return files
 
     def get_file_at_ref(self, path, ref):
-        # Use the contents API with ?ref=<sha-or-branch>
-        resp = requests.get(f"{self.base_url}/contents/{path}", headers={'Authorization': f'token {self.token}', 'Accept': 'application/vnd.github.v3.raw'}, params={'ref': ref})
+        # raw content
+        try:
+            return self._get(f'/contents/{path}', params={'ref': ref}, accept_raw=True)
+        except Exception:
+            return None
+
+    def get_file_sha(self, path, ref):
+        headers = {
+            'Authorization': f'token {self.token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        resp = requests.get(f"{self.base_url}/contents/{path}", headers=headers, params={'ref': ref})
         if resp.status_code == 200:
-            return resp.text
-        # Not found at ref
-        return None
+            return resp.json().get('sha')
+        if resp.status_code == 404:
+            return None
+        raise Exception(f"GitHub API get file sha {resp.status_code}: {resp.text}")
+
+    def update_file(self, path, content_text, branch, message, sha=None, dry_run=False):
+        """
+        Create or update a file at `path` on `branch` with content_text.
+        If sha is provided, it's treated as an update; otherwise GitHub will create new file.
+        """
+        b64 = base64.b64encode(content_text.encode('utf-8')).decode('ascii')
+        payload = {
+            "message": message,
+            "content": b64,
+            "branch": branch
+        }
+        if sha:
+            payload['sha'] = sha
+        if dry_run:
+            print('[DRY-RUN] Would update file in repo:', path)
+            print('[DRY-RUN] Message:', message)
+            print('[DRY-RUN] Branch:', branch)
+            return True
+        headers = {
+            'Authorization': f'token {self.token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        resp = requests.put(f"{self.base_url}/contents/{path}", headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            print('[INFO] GitHub file updated:', path)
+            return True
+        else:
+            print('[ERROR] GitHub update failed:', resp.status_code, resp.text)
+            return False
 
 # -----------------------------
 # Snowflake helpers
 # -----------------------------
-
 def write_temp_key(pem_text: str):
     fd, path = tempfile.mkstemp(prefix="snow_pk_", suffix=".pem")
     os.write(fd, pem_text.encode('utf-8'))
     os.close(fd)
     os.chmod(path, 0o600)
     return path
-
 
 def get_snowflake_conn_from_env():
     required = ['SNOWFLAKE_USER', 'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_PRIVATE_KEY']
@@ -123,7 +153,6 @@ def get_snowflake_conn_from_env():
     )
     return conn, keyfile
 
-
 def execute_sql_statements(cur, sql_text, dry_run=False):
     sql_text = sql_text.strip()
     if not sql_text:
@@ -134,8 +163,7 @@ def execute_sql_statements(cur, sql_text, dry_run=False):
         return
     try:
         cur.execute(sql_text)
-    except Exception as e:
-        # fallback split; helpful for multi-statement files
+    except Exception:
         parts = [s.strip() for s in re.split(r';\s*\n', sql_text) if s.strip()]
         for p in parts:
             try:
@@ -143,9 +171,13 @@ def execute_sql_statements(cur, sql_text, dry_run=False):
             except Exception as e2:
                 print('[ERROR] statement failed:', e2, 'statement head:', p[:200])
 
-
 def restore_from_clone_getddl(cur, db, sch, name, obj_type, ts, dry_run=False):
+    """
+    Clone schema at timestamp and GET_DDL for object.
+    Returns the DDL text applied to the real schema (or None).
+    """
     clone_schema = f"{sch}_rb_clone_{int(time.time())}"
+    ddl_to_apply = None
     try:
         sql_create = f"CREATE SCHEMA {db}.{clone_schema} CLONE {db}.{sch} AT (TIMESTAMP=>'{ts}');"
         print('[INFO]', sql_create)
@@ -171,20 +203,24 @@ def restore_from_clone_getddl(cur, db, sch, name, obj_type, ts, dry_run=False):
                 cur.execute(sql_drop)
         except Exception as e:
             print('[WARN] Cleanup drop failed:', e)
+    return ddl_to_apply
 
 # -----------------------------
 # SQL parsing helper
 # -----------------------------
-
 def parse_sql_metadata(text):
     if not text:
         return {}
-    m = re.search(r"\b(CREATE|ALTER|DROP)\s+(?:OR\s+REPLACE\s+)?(VIEW|MATERIALIZED\s+VIEW|STAGE|FUNCTION|PROCEDURE)\s+((?:[\w]+\.){0,2}[\w]+)", text, re.IGNORECASE)
+    m = re.search(
+        r"\b(CREATE|ALTER|DROP)\s+(?:OR\s+REPLACE\s+)?(VIEW|MATERIALIZED\s+VIEW|STAGE|FUNCTION|PROCEDURE)\s+((?:[\w]+\.){0,2}[\w]+)",
+        text, re.IGNORECASE
+    )
     if not m:
         return {}
     obj = m.group(2).upper()
     parts = m.group(3).split('.')
-    db = schema = None; name = parts[-1]
+    db = schema = None
+    name = parts[-1]
     if len(parts) == 3:
         db, schema, name = parts
     elif len(parts) == 2:
@@ -194,11 +230,10 @@ def parse_sql_metadata(text):
 # -----------------------------
 # Main
 # -----------------------------
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--repo', required=True, help='owner/repo')
-    p.add_argument('--token', required=True, help='GitHub token')
+    p.add_argument('--token', required=True, help='GitHub token (must allow repo write to update files)')
     p.add_argument('--pr', type=int, default=None, help='PR number (default: latest closed PR)')
     p.add_argument('--path', default='snowflake/', help='path filter to SQL files')
     p.add_argument('--dry-run', action='store_true')
@@ -206,26 +241,27 @@ def main():
 
     gh = GitHubPRInspector(args.repo, args.token, path_filter=args.path)
 
-    # pick PR
     pr_num = args.pr
     if not pr_num:
         pr_num = gh.get_latest_closed_pr_number()
         print('[INFO] using latest closed PR', pr_num)
     pr = gh.get_pr(pr_num)
     base_sha = pr['base']['sha']
+    # target_branch is the branch the PR is targeting (i.e., where the PR would merge into)
+    target_branch = pr['base']['ref']
     merged_at = pr.get('merged_at')
     merged_ts = None
     if merged_at:
-        merged_ts = datetime.strptime(merged_at, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        merged_ts = datetime.strptime(merged_at, '%Y-%m-%dT%H:%M:%SZ').replace(
+            tzinfo=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
     files = gh.get_pr_files(pr_num)
-    # filter files under path and likely repeatables
+
     candidate_files = []
     for f in files:
         fname = f['filename']
         if not fname.startswith(args.path):
             continue
-        # simple heuristic: repeatable files often named R__ or placed under repeatable folder; include all .sql for parsing
         if not fname.lower().endswith('.sql'):
             continue
         candidate_files.append(f)
@@ -243,7 +279,7 @@ def main():
         path = f['filename']
         status = f.get('status')
         print('\n[PROCESS FILE]', path, 'status=', status)
-        # try to get previous content from base sha
+
         prev_content = None
         try:
             prev_content = gh.get_file_at_ref(path, base_sha)
@@ -252,7 +288,6 @@ def main():
 
         meta = parse_sql_metadata(prev_content or '')
         if not meta:
-            # maybe previous content not present or parsing failed: try parsing current (to infer object)
             try:
                 cur_content = gh.get_file_at_ref(path, pr['head']['sha'])
             except Exception:
@@ -272,30 +307,57 @@ def main():
         sch = meta.get('schema') or os.getenv('SNOWFLAKE_SCHEMA') or 'PUBLIC'
         name = meta.get('object_name')
 
-        # If we have previous file content, apply it
+        # If previous content exists: apply it and then update repo file on target_branch
         if prev_content:
             print(f"[APPLY PREV FILE] applying previous SQL blob for {sch}.{name} ({typ})")
             try:
                 execute_sql_statements(cur, prev_content, dry_run=args.dry_run)
+                # attempt to update repo to the prev_content on target branch
+                commit_message = f"revert {path} to pre-PR state (PR #{pr_num})"
+                try:
+                    current_sha = gh.get_file_sha(path, target_branch)
+                    success = gh.update_file(path, prev_content, branch=target_branch, message=commit_message, sha=current_sha, dry_run=args.dry_run)
+                    if not success:
+                        print('[WARN] repo update for', path, 'failed on branch', target_branch)
+                except Exception as e:
+                    print('[WARN] repo update error for', path, e)
             except Exception as e:
                 print('[ERROR] applying previous blob failed:', e)
                 # fallback to clone+GET_DDL if merge time available
                 if merged_ts:
                     print('[FALLBACK] attempting clone+GET_DDL')
-                    restore_from_clone_getddl(cur, db, sch, name, typ, merged_ts, dry_run=args.dry_run)
+                    ddl_applied = restore_from_clone_getddl(cur, db, sch, name, typ, merged_ts, dry_run=args.dry_run)
+                    if ddl_applied:
+                        commit_message = f"reconstruct {path} from DB snapshot at {merged_ts} (PR #{pr_num})"
+                        try:
+                            current_sha = gh.get_file_sha(path, target_branch)
+                            gh.update_file(path, ddl_applied, branch=target_branch, message=commit_message, sha=current_sha, dry_run=args.dry_run)
+                        except Exception as e2:
+                            print('[WARN] repo update after clone fallback failed:', e2)
             continue
 
-        # If no previous content, fallback to clone+GET_DDL using merged timestamp (or now)
+        # If file was newly added in PR: do nothing (per your request)
+        if status == "added":
+            print(f"[SKIP] {path} was newly added in PR; nothing to rollback or commit.")
+            continue
+
+        # No prev_content but not newly added: try clone+GET_DDL fallback and update repo with reconstructed DDL
         if merged_ts:
             print(f"[FALLBACK CLONE] no previous blob; using clone+GET_DDL for {db}.{sch}.{name} at {merged_ts}")
             try:
-                restore_from_clone_getddl(cur, db, sch, name, typ, merged_ts, dry_run=args.dry_run)
+                ddl_applied = restore_from_clone_getddl(cur, db, sch, name, typ, merged_ts, dry_run=args.dry_run)
+                if ddl_applied:
+                    commit_message = f"reconstruct {path} from DB snapshot at {merged_ts} (PR #{pr_num})"
+                    try:
+                        current_sha = gh.get_file_sha(path, target_branch)
+                        gh.update_file(path, ddl_applied, branch=target_branch, message=commit_message, sha=current_sha, dry_run=args.dry_run)
+                    except Exception as e:
+                        print('[WARN] repo update after clone fallback failed:', e)
             except Exception as e:
                 print('[ERROR] clone fallback failed:', e)
         else:
             print('[WARN] no previous blob and no PR merged timestamp; manual restore needed for', path)
 
-    # cleanup
     cur.close()
     conn.close()
     try:
