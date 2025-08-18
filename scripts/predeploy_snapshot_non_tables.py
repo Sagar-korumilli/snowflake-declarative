@@ -12,8 +12,9 @@ Behavior:
   STAGE, FUNCTION, PROCEDURE), attempt to restore the *previous file contents* from
   the PR base commit (i.e. the repo state before the PR) and apply that SQL to
   Snowflake.
-- If the file had no prior version (it was added in the PR) or previous content
-  cannot be fetched, fall back to cloning the schema at the PR merge timestamp and
+- If the file had no prior version (it was added in the PR), do nothing.
+- If previous content cannot be fetched but the file did exist before,
+  fall back to cloning the schema at the PR merge timestamp and
   using GET_DDL to recreate the prior object definition.
 - Does NOT touch tables or time-travel logic (table handling should remain in your
   existing script).
@@ -37,7 +38,6 @@ Notes:
 import os
 import argparse
 import tempfile
-import base64
 import requests
 import re
 import time
@@ -49,7 +49,6 @@ import snowflake.connector
 # -----------------------------
 class GitHubPRInspector:
     def __init__(self, repo, token, path_filter='snowflake/'):
-        # repo: owner/repo
         parts = repo.split('/')
         if len(parts) != 2:
             raise ValueError('repo must be owner/repo')
@@ -59,7 +58,10 @@ class GitHubPRInspector:
         self.base_url = f'https://api.github.com/repos/{self.owner}/{self.repo}'
 
     def _get(self, endpoint, params=None):
-        headers = {'Authorization': f'token {self.token}', 'Accept': 'application/vnd.github.v3.raw+json'}
+        headers = {
+            'Authorization': f'token {self.token}',
+            'Accept': 'application/vnd.github.v3.raw+json'
+        }
         resp = requests.get(f"{self.base_url}{endpoint}", headers=headers, params=params or {})
         if resp.status_code not in (200, 201):
             raise Exception(f"GitHub API {resp.status_code}: {resp.text}")
@@ -88,11 +90,13 @@ class GitHubPRInspector:
         return files
 
     def get_file_at_ref(self, path, ref):
-        # Use the contents API with ?ref=<sha-or-branch>
-        resp = requests.get(f"{self.base_url}/contents/{path}", headers={'Authorization': f'token {self.token}', 'Accept': 'application/vnd.github.v3.raw'}, params={'ref': ref})
+        resp = requests.get(
+            f"{self.base_url}/contents/{path}",
+            headers={'Authorization': f'token {self.token}', 'Accept': 'application/vnd.github.v3.raw'},
+            params={'ref': ref}
+        )
         if resp.status_code == 200:
             return resp.text
-        # Not found at ref
         return None
 
 # -----------------------------
@@ -105,7 +109,6 @@ def write_temp_key(pem_text: str):
     os.close(fd)
     os.chmod(path, 0o600)
     return path
-
 
 def get_snowflake_conn_from_env():
     required = ['SNOWFLAKE_USER', 'SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_PRIVATE_KEY']
@@ -123,7 +126,6 @@ def get_snowflake_conn_from_env():
     )
     return conn, keyfile
 
-
 def execute_sql_statements(cur, sql_text, dry_run=False):
     sql_text = sql_text.strip()
     if not sql_text:
@@ -134,15 +136,13 @@ def execute_sql_statements(cur, sql_text, dry_run=False):
         return
     try:
         cur.execute(sql_text)
-    except Exception as e:
-        # fallback split; helpful for multi-statement files
+    except Exception:
         parts = [s.strip() for s in re.split(r';\s*\n', sql_text) if s.strip()]
         for p in parts:
             try:
                 cur.execute(p)
             except Exception as e2:
                 print('[ERROR] statement failed:', e2, 'statement head:', p[:200])
-
 
 def restore_from_clone_getddl(cur, db, sch, name, obj_type, ts, dry_run=False):
     clone_schema = f"{sch}_rb_clone_{int(time.time())}"
@@ -179,12 +179,16 @@ def restore_from_clone_getddl(cur, db, sch, name, obj_type, ts, dry_run=False):
 def parse_sql_metadata(text):
     if not text:
         return {}
-    m = re.search(r"\b(CREATE|ALTER|DROP)\s+(?:OR\s+REPLACE\s+)?(VIEW|MATERIALIZED\s+VIEW|STAGE|FUNCTION|PROCEDURE)\s+((?:[\w]+\.){0,2}[\w]+)", text, re.IGNORECASE)
+    m = re.search(
+        r"\b(CREATE|ALTER|DROP)\s+(?:OR\s+REPLACE\s+)?(VIEW|MATERIALIZED\s+VIEW|STAGE|FUNCTION|PROCEDURE)\s+((?:[\w]+\.){0,2}[\w]+)",
+        text, re.IGNORECASE
+    )
     if not m:
         return {}
     obj = m.group(2).upper()
     parts = m.group(3).split('.')
-    db = schema = None; name = parts[-1]
+    db = schema = None
+    name = parts[-1]
     if len(parts) == 3:
         db, schema, name = parts
     elif len(parts) == 2:
@@ -206,7 +210,6 @@ def main():
 
     gh = GitHubPRInspector(args.repo, args.token, path_filter=args.path)
 
-    # pick PR
     pr_num = args.pr
     if not pr_num:
         pr_num = gh.get_latest_closed_pr_number()
@@ -216,16 +219,16 @@ def main():
     merged_at = pr.get('merged_at')
     merged_ts = None
     if merged_at:
-        merged_ts = datetime.strptime(merged_at, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        merged_ts = datetime.strptime(merged_at, '%Y-%m-%dT%H:%M:%SZ').replace(
+            tzinfo=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
     files = gh.get_pr_files(pr_num)
-    # filter files under path and likely repeatables
+
     candidate_files = []
     for f in files:
         fname = f['filename']
         if not fname.startswith(args.path):
             continue
-        # simple heuristic: repeatable files often named R__ or placed under repeatable folder; include all .sql for parsing
         if not fname.lower().endswith('.sql'):
             continue
         candidate_files.append(f)
@@ -243,7 +246,7 @@ def main():
         path = f['filename']
         status = f.get('status')
         print('\n[PROCESS FILE]', path, 'status=', status)
-        # try to get previous content from base sha
+
         prev_content = None
         try:
             prev_content = gh.get_file_at_ref(path, base_sha)
@@ -252,7 +255,6 @@ def main():
 
         meta = parse_sql_metadata(prev_content or '')
         if not meta:
-            # maybe previous content not present or parsing failed: try parsing current (to infer object)
             try:
                 cur_content = gh.get_file_at_ref(path, pr['head']['sha'])
             except Exception:
@@ -272,20 +274,21 @@ def main():
         sch = meta.get('schema') or os.getenv('SNOWFLAKE_SCHEMA') or 'PUBLIC'
         name = meta.get('object_name')
 
-        # If we have previous file content, apply it
         if prev_content:
             print(f"[APPLY PREV FILE] applying previous SQL blob for {sch}.{name} ({typ})")
             try:
                 execute_sql_statements(cur, prev_content, dry_run=args.dry_run)
             except Exception as e:
                 print('[ERROR] applying previous blob failed:', e)
-                # fallback to clone+GET_DDL if merge time available
                 if merged_ts:
                     print('[FALLBACK] attempting clone+GET_DDL')
                     restore_from_clone_getddl(cur, db, sch, name, typ, merged_ts, dry_run=args.dry_run)
             continue
 
-        # If no previous content, fallback to clone+GET_DDL using merged timestamp (or now)
+        if status == "added":
+            print(f"[SKIP] {path} was newly added in PR; nothing to rollback.")
+            continue
+
         if merged_ts:
             print(f"[FALLBACK CLONE] no previous blob; using clone+GET_DDL for {db}.{sch}.{name} at {merged_ts}")
             try:
@@ -295,7 +298,6 @@ def main():
         else:
             print('[WARN] no previous blob and no PR merged timestamp; manual restore needed for', path)
 
-    # cleanup
     cur.close()
     conn.close()
     try:
