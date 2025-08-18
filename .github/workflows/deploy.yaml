@@ -1,4 +1,4 @@
-name: ❄️ Snowflake Full Deploy
+name: ❄️ Snowflake Full Deploy test
 
 on:
   push:
