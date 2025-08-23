@@ -1,34 +1,52 @@
-name: ❄️ Snowflake Full Deploy test
+name: ❄️ Snowflake Full Deploy
 
 on:
-  push:
-    branches:
-      - schema-level
+  pull_request:
+    types: [closed]
+    branches: [ schema-level ]
   workflow_dispatch:
+
+permissions:
+  contents: write        # Required to push changes back to repo
+  pull-requests: write   # Optional: if you need PR operations
+  actions: read          # Required for workflow operations
 
 jobs:
   deploy:
+    # Only run when the PR was closed AND merged (closed without merge will skip)
+    if: ${{ github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    
-    permissions:
-      contents: write
-      pull-requests: write
-      actions: read
-    
+    environment:
+      name: development
+
     env:
-      # Git identity (used by backup_ddl.py and push step)
+      # Git identity (used by backup_ddl.py)
       GIT_USER_NAME:    "Sagar-korumilli"
       GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-      GIT_PUSH_TOKEN:  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository (shallow fetch depth disabled)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           persist-credentials: true
+
+      - name: Ensure we are on the exact merge commit produced by the PR
+        # This attempts to check out the merge commit SHA if available,
+        # otherwise fetches the special pull/NN/merge ref and checks out FETCH_HEAD.
+        run: |
+          set -e
+          echo "merge_commit_sha='${{ github.event.pull_request.merge_commit_sha }}'"
+          if [ -n "${{ github.event.pull_request.merge_commit_sha }}" ]; then
+            git checkout "${{ github.event.pull_request.merge_commit_sha }}"
+          else
+            echo "merge_commit_sha not provided; fetching refs/pull/${{ github.event.pull_request.number }}/merge"
+            git fetch origin +refs/pull/${{ github.event.pull_request.number }}/merge
+            git checkout FETCH_HEAD
+          fi
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -38,9 +56,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install schemachange==4.0.1 snowflake-connector-python GitPython requests
+          pip install schemachange==4.0.1 snowflake-connector-python GitPython
 
-          
       - name: Validate Snowflake env vars
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -135,35 +152,6 @@ jobs:
                 --create-change-history-table -v
             fi
           done
-
-      # -------------------------
-      # NEW: Commit rollback snapshots (only on success)
-      # -------------------------
-      - name: Commit rollback snapshots
-        if: ${{ success() }}
-        env:
-          GIT_USER_NAME:    "Sagar-korumilli"
-          GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
-          PUSH_PAT: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          SNAP_DIR="rollback/pr-${{ github.run_id }}"
-          if [ ! -d "$SNAP_DIR" ]; then
-            echo "No snapshot directory ($SNAP_DIR) to commit"
-            exit 0
-          fi
-          git config user.name "$GIT_USER_NAME"
-          git config user.email "$GIT_USER_EMAIL"
-          # create a dedicated rollback branch
-          BRANCH="rollback/pr-${{ github.run_id }}"
-          git checkout -b "$BRANCH"
-          git add "$SNAP_DIR"
-          if git diff --staged --quiet; then
-            echo "No snapshot changes to commit"
-            exit 0
-          fi
-          git commit -m "chore(rollback): add pre-deploy DDL snapshots for run ${{ github.run_id }}"
-          git push "https://x-access-token:${PUSH_PAT}@github.com/${{ github.repository }}" HEAD:refs/heads/"$BRANCH"
-          echo "Snapshots committed to branch $BRANCH"
 
       - name: Snapshot updated DDL baseline
         env:
