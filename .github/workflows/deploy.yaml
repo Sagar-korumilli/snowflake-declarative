@@ -3,31 +3,28 @@ name: ❄️ Snowflake Full Deploy
 on:
   pull_request:
     types: [closed]
-    branches: [ schema-level ]
+    branches: [ dev, release, main ]
   workflow_dispatch:
 
 permissions:
-  contents: write        # Required to push changes back to repo
-  pull-requests: write   # Optional: if you need PR operations
-  actions: read          # Required for workflow operations
+  contents: write
+  pull-requests: write
+  actions: read
 
+# DEV: deploy to development when PR merged into dev
 jobs:
-  deploy:
-    # Only run when the PR was closed AND merged (closed without merge will skip)
-    if: ${{ github.event.pull_request.merged == true }}
+  deploy-dev:
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment:
-      name: development
-
+    environment: development
     env:
-      # Git identity (used by backup_ddl.py)
       GIT_USER_NAME:    "Sagar-korumilli"
       GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
       GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
     steps:
-      - name: Checkout repository (shallow fetch depth disabled)
+      - name: Checkout repository (full fetch)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -35,8 +32,6 @@ jobs:
           persist-credentials: true
 
       - name: Ensure we are on the exact merge commit produced by the PR
-        # This attempts to check out the merge commit SHA if available,
-        # otherwise fetches the special pull/NN/merge ref and checks out FETCH_HEAD.
         run: |
           set -e
           echo "merge_commit_sha='${{ github.event.pull_request.merge_commit_sha }}'"
@@ -47,6 +42,11 @@ jobs:
             git fetch origin +refs/pull/${{ github.event.pull_request.number }}/merge
             git checkout FETCH_HEAD
           fi
+
+      - name: Configure git identity (used by scripts that push)
+        run: |
+          git config user.name "${GIT_USER_NAME}"
+          git config user.email "${GIT_USER_EMAIL}"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -168,4 +168,478 @@ jobs:
         if: always()
         run: |
           rm -f key.pem connections.toml
-          echo "✔️ Completed Snowflake deploy for all schema folders under snowflake/."
+          echo "✔️ Completed Snowflake deploy for development."
+
+# RELEASE: QA then UAT (QA runs automatically; UAT waits for environment approval if configured)
+  deploy-qa:
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: qa
+    env:
+      GIT_USER_NAME:    "Sagar-korumilli"
+      GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
+      GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+    steps:
+      - name: Checkout repository (full fetch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          persist-credentials: true
+
+      - name: Ensure we are on the exact merge commit produced by the PR
+        run: |
+          set -e
+          echo "merge_commit_sha='${{ github.event.pull_request.merge_commit_sha }}'"
+          if [ -n "${{ github.event.pull_request.merge_commit_sha }}" ]; then
+            git checkout "${{ github.event.pull_request.merge_commit_sha }}"
+          else
+            echo "merge_commit_sha not provided; fetching refs/pull/${{ github.event.pull_request.number }}/merge"
+            git fetch origin +refs/pull/${{ github.event.pull_request.number }}/merge
+            git checkout FETCH_HEAD
+          fi
+
+      - name: Configure git identity (used by scripts that push)
+        run: |
+          git config user.name "${GIT_USER_NAME}"
+          git config user.email "${GIT_USER_EMAIL}"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install schemachange==4.0.1 snowflake-connector-python GitPython
+
+      - name: Validate Snowflake env vars
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY \
+                  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE \
+                  SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Missing $v"
+              exit 1
+            fi
+          done
+
+      - name: Write private key file
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
+
+      - name: Generate connections.toml
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          cat > connections.toml <<EOF
+          [connections]
+            account             = "${SNOWFLAKE_ACCOUNT}"
+            user                = "${SNOWFLAKE_USER}"
+            private_key_file    = "key.pem"
+            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+            authenticator       = "snowflake_jwt"
+            role                = "${SNOWFLAKE_ROLE}"
+            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+            database            = "${SNOWFLAKE_DATABASE}"
+          EOF
+          chmod 600 connections.toml
+
+      - name: Validate for risky SQL
+        run: python scripts/sql_risk_validator.py --snowflake-root snowflake/
+
+      - name: Check object dependencies
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/dependency_checker.py --snowflake-root snowflake/
+
+      - name: Backup tables using zero-copy
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/clone_tables.py --snowflake-root snowflake/
+
+      - name: Deploy versioned migrations
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          for d in snowflake/*; do
+            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
+              schema_name=$(basename "$d")
+              schemachange deploy \
+                --connections-file connections.toml \
+                --connection-name connections \
+                --root-folder $d \
+                --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
+                --create-change-history-table -v
+            fi
+          done
+
+      - name: Snapshot updated DDL baseline
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/backup_ddl.py --snowflake-root snowflake/
+
+      - name: Clean up temporary files
+        if: always()
+        run: |
+          rm -f key.pem connections.toml
+          echo "✔️ Completed Snowflake deploy for QA."
+
+  deploy-uat:
+    needs: deploy-qa
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: uat
+    env:
+      GIT_USER_NAME:    "Sagar-korumilli"
+      GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
+      GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+    steps:
+      - name: Checkout repository (full fetch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          persist-credentials: true
+
+      - name: Ensure we are on the exact merge commit produced by the PR
+        run: |
+          set -e
+          echo "merge_commit_sha='${{ github.event.pull_request.merge_commit_sha }}'"
+          if [ -n "${{ github.event.pull_request.merge_commit_sha }}" ]; then
+            git checkout "${{ github.event.pull_request.merge_commit_sha }}"
+          else
+            echo "merge_commit_sha not provided; fetching refs/pull/${{ github.event.pull_request.number }}/merge"
+            git fetch origin +refs/pull/${{ github.event.pull_request.number }}/merge
+            git checkout FETCH_HEAD
+          fi
+
+      - name: Configure git identity (used by scripts that push)
+        run: |
+          git config user.name "${GIT_USER_NAME}"
+          git config user.email "${GIT_USER_EMAIL}"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install schemachange==4.0.1 snowflake-connector-python GitPython
+
+      - name: Validate Snowflake env vars
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY \
+                  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE \
+                  SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Missing $v"
+              exit 1
+            fi
+          done
+
+      - name: Write private key file
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
+
+      - name: Generate connections.toml
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          cat > connections.toml <<EOF
+          [connections]
+            account             = "${SNOWFLAKE_ACCOUNT}"
+            user                = "${SNOWFLAKE_USER}"
+            private_key_file    = "key.pem"
+            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+            authenticator       = "snowflake_jwt"
+            role                = "${SNOWFLAKE_ROLE}"
+            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+            database            = "${SNOWFLAKE_DATABASE}"
+          EOF
+          chmod 600 connections.toml
+
+      - name: Validate for risky SQL
+        run: python scripts/sql_risk_validator.py --snowflake-root snowflake/
+
+      - name: Check object dependencies
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/dependency_checker.py --snowflake-root snowflake/
+
+      - name: Backup tables using zero-copy
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/clone_tables.py --snowflake-root snowflake/
+
+      - name: Deploy versioned migrations
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          for d in snowflake/*; do
+            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
+              schema_name=$(basename "$d")
+              schemachange deploy \
+                --connections-file connections.toml \
+                --connection-name connections \
+                --root-folder $d \
+                --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
+                --create-change-history-table -v
+            fi
+          done
+
+      - name: Snapshot updated DDL baseline
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/backup_ddl.py --snowflake-root snowflake/
+
+      - name: Clean up temporary files
+        if: always()
+        run: |
+          rm -f key.pem connections.toml
+          echo "✔️ Completed Snowflake deploy for UAT."
+
+# MAIN: production
+  deploy-prod:
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      GIT_USER_NAME:    "Sagar-korumilli"
+      GIT_USER_EMAIL:   "sagar.korumilli11@gmail.com"
+      GIT_PUSH_TOKEN:   ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+    steps:
+      - name: Checkout repository (full fetch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          persist-credentials: true
+
+      - name: Ensure we are on the exact merge commit produced by the PR
+        run: |
+          set -e
+          echo "merge_commit_sha='${{ github.event.pull_request.merge_commit_sha }}'"
+          if [ -n "${{ github.event.pull_request.merge_commit_sha }}" ]; then
+            git checkout "${{ github.event.pull_request.merge_commit_sha }}"
+          else
+            echo "merge_commit_sha not provided; fetching refs/pull/${{ github.event.pull_request.number }}/merge"
+            git fetch origin +refs/pull/${{ github.event.pull_request.number }}/merge
+            git checkout FETCH_HEAD
+          fi
+
+      - name: Configure git identity (used by scripts that push)
+        run: |
+          git config user.name "${GIT_USER_NAME}"
+          git config user.email "${GIT_USER_EMAIL}"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install schemachange==4.0.1 snowflake-connector-python GitPython
+
+      - name: Validate Snowflake env vars
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY \
+                  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE \
+                  SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Missing $v"
+              exit 1
+            fi
+          done
+
+      - name: Write private key file
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
+
+      - name: Generate connections.toml
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          cat > connections.toml <<EOF
+          [connections]
+            account             = "${SNOWFLAKE_ACCOUNT}"
+            user                = "${SNOWFLAKE_USER}"
+            private_key_file    = "key.pem"
+            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+            authenticator       = "snowflake_jwt"
+            role                = "${SNOWFLAKE_ROLE}"
+            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+            database            = "${SNOWFLAKE_DATABASE}"
+          EOF
+          chmod 600 connections.toml
+
+      - name: Validate for risky SQL
+        run: python scripts/sql_risk_validator.py --snowflake-root snowflake/
+
+      - name: Check object dependencies
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/dependency_checker.py --snowflake-root snowflake/
+
+      - name: Backup tables using zero-copy
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/clone_tables.py --snowflake-root snowflake/
+
+      - name: Deploy versioned migrations
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          for d in snowflake/*; do
+            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
+              schema_name=$(basename "$d")
+              schemachange deploy \
+                --connections-file connections.toml \
+                --connection-name connections \
+                --root-folder $d \
+                --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
+                --create-change-history-table -v
+            fi
+          done
+
+      - name: Snapshot updated DDL baseline
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: python scripts/backup_ddl.py --snowflake-root snowflake/
+
+      - name: Clean up temporary files
+        if: always()
+        run: |
+          rm -f key.pem connections.toml
+          echo "✔️ Completed Snowflake deploy for production."
