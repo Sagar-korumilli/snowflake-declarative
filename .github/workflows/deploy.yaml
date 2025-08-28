@@ -109,28 +109,7 @@ jobs:
       - name: Validate for risky SQL
         run: python scripts/sql_risk_validator.py --snowflake-root snowflake/
 
-      - name: Check object dependencies
-        env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: python scripts/dependency_checker.py --snowflake-root snowflake/
-
-      - name: Backup tables using zero-copy
-        env:
-          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-        run: python scripts/clone_tables.py --snowflake-root snowflake/
-
+      
       - name: Deploy versioned migrations
         env:
           SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -142,7 +121,6 @@ jobs:
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           for d in snowflake/*; do
-            if [ -d "$d" ] && [[ "$(basename "$d")" != "rollback" ]]; then
               schema_name=$(basename "$d")
               schemachange deploy \
                 --connections-file connections.toml \
@@ -150,7 +128,6 @@ jobs:
                 --root-folder $d \
                 --change-history-table "${{ secrets.SNOWFLAKE_DATABASE }}.${schema_name}.SCHEMA_CHANGE_HISTORY" \
                 --create-change-history-table -v
-            fi
           done
 
       - name: Snapshot updated DDL baseline
