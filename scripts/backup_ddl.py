@@ -1,35 +1,24 @@
 #!/usr/bin/env python3
-"""
-backup_ddl.py
-
-- Only replaces existing DDL files (does NOT create new files).
-- Creates a timestamped backup under <schema>/backup/ before overwriting.
-- Pushes commits back to a specified branch provided via env TARGET_PUSH_BRANCH.
-"""
+from __future__ import annotations
 import argparse
+import logging
 import os
 import re
 import sys
 import time
 import tempfile
-import logging
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import List, Optional, Tuple
 import snowflake.connector
 
-# ---- logging ----
-def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler()],
-    )
+# ---------------- logging ----------------
+def setup_logging(debug: bool = False) -> logging.Logger:
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
     return logging.getLogger(__name__)
 
-logger = setup_logging()
-
-# ---- Snowflake connection (private key file written temporarily) ----
+# ---------------- Snowflake ----------------
 def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection, str]:
     required = [
         "SNOWFLAKE_ACCOUNT",
@@ -44,6 +33,7 @@ def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection,
         if not os.getenv(v):
             raise RuntimeError(f"❌ Missing environment variable: {v}")
 
+    # write private key to temporary file
     with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".pem") as tf:
         tf.write(os.getenv("SNOWFLAKE_PRIVATE_KEY"))
         key_path = tf.name
@@ -67,7 +57,7 @@ def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection,
             os.remove(key_path)
         except Exception:
             pass
-        raise
+        raise RuntimeError(f"❌ Failed to connect to Snowflake: {e}")
 
 def get_current_ddl(conn: snowflake.connector.SnowflakeConnection, object_type: str, full_name: str) -> Optional[str]:
     try:
@@ -85,8 +75,8 @@ def get_current_ddl(conn: snowflake.connector.SnowflakeConnection, object_type: 
         logger.error(f"❌ Failed to get DDL for {full_name}: {e}")
         return None
 
-# ---- Git helpers ----
-def configure_git_credentials(name: str, email: str):
+# ---------------- Git helpers ----------------
+def configure_git_identity(name: str, email: str):
     try:
         subprocess.run(["git", "config", "--local", "user.name", name], check=True)
         subprocess.run(["git", "config", "--local", "user.email", email], check=True)
@@ -113,70 +103,86 @@ def git_add_commit_push(file_path: Path, message: str, target_branch: Optional[s
         subprocess.run(["git", "add", str(file_path)], check=True)
         subprocess.run(["git", "commit", "-m", message], check=True)
 
-        # If caller passed a target branch, push detached HEAD to that branch
         if target_branch:
-            logger.info(f"➡️ Pushing commit to origin {target_branch}")
+            # push the detached HEAD commit to the target branch
             subprocess.run(["git", "push", "origin", f"HEAD:{target_branch}"], check=True)
+            logger.info(f"➡️ Pushed commit to origin:{target_branch}")
         else:
-            logger.info("➡️ Pushing commit to origin HEAD")
             subprocess.run(["git", "push", "origin", "HEAD"], check=True)
-        logger.info(f"✅ Pushed {file_path}")
+            logger.info("➡️ Pushed commit to origin HEAD")
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Git operation failed for {file_path}: {e}")
 
-# ---- SQL detection ----
+ALTER_RE = re.compile(
+    r'''
+    ALTER\s+
+    (TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)   # object type
+    \s+
+    (?:
+        (?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))  # optional db (group 2/3/4)
+        \.
+    )?
+    (?:
+        (?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))  # optional schema (group 5/6/7)
+        \.
+    )?
+    (?:
+        (?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))  # object (group 8/9/10)
+    )
+    ''',
+    re.IGNORECASE | re.VERBOSE,
+)
+
+def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str], Optional[str], str]]:
+    """
+    Returns list of tuples: (OBJECT_TYPE, optional DB, optional SCHEMA, OBJECT)
+    All returned names are upper-cased and unquoted.
+    """
+    results: List[Tuple[str, Optional[str], Optional[str], str]] = []
+    for m in ALTER_RE.finditer(sql_content):
+        obj_type = m.group(1).upper()
+        # db can be in group 2,3,4
+        db = (m.group(2) or m.group(3) or m.group(4) or None)
+        schema = (m.group(5) or m.group(6) or m.group(7) or None)
+        obj = (m.group(8) or m.group(9) or m.group(10))
+        # normalize
+        db_u = db.upper() if db else None
+        schema_u = schema.upper() if schema else None
+        obj_u = obj.upper()
+        results.append((obj_type, db_u, schema_u, obj_u))
+    return results
+
 def find_changed_sql_files(sf_root: str) -> List[Path]:
     altered: List[Path] = []
-    alter_pattern = r"ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+"
     root = Path(sf_root)
     if not root.exists():
         raise FileNotFoundError(f"❌ Snowflake root not found: {sf_root}")
 
     for p in root.rglob("*.sql"):
-        # skip rollback and .git
         if any(part.lower() in ("rollback", ".git") for part in p.parts):
             continue
         try:
             txt = p.read_text(encoding="utf-8")
-            if re.search(alter_pattern, txt, re.IGNORECASE):
+            if re.search(r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+', txt, re.IGNORECASE):
                 altered.append(p)
                 logger.info(f"🔍 Found ALTER statement in: {p}")
         except Exception as e:
             logger.warning(f"⚠️ Could not read {p}: {e}")
     return altered
 
-def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str], str]]:
-    """
-    Returns list of (OBJECT_TYPE, optional SCHEMA, OBJECT_NAME)
-    Prioritizes fully-qualified forms; also matches unqualified object names.
-    """
-    results = []
-    fq = re.compile(
-        r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+(?:["`]?([A-Za-z0-9_]+)["`]?\.)?["`]?([A-Za-z0-9_]+)["`]?',
-        re.IGNORECASE,
-    )
-    for m in fq.finditer(sql_content):
-        obj_type = m.group(1).upper()
-        schema = m.group(2).upper() if m.group(2) else None
-        obj_name = m.group(3).upper()
-        results.append((obj_type, schema, obj_name))
-    return results
-
-# ---- locate & update file ----
+# ---------------- locate existing files (do not create new) ----------------
 def find_existing_object_file(schema_root: Path, object_name: str, object_type: str) -> Optional[Path]:
     """
-    Look for an existing file owning this object under schema_root (search tables/, views/ and root).
-    Return Path if found; otherwise return None (do NOT create a new file).
+    Search for an existing DDL file that likely owns the object.
+    Return Path or None (do NOT create files).
+    Search order: tables/, views/, schema root.
     """
     object_name_lower = object_name.lower()
+    candidate_dirs = [schema_root / "tables", schema_root / "views", schema_root]
 
-    # candidate dirs to search (tables, views, schema root)
-    candidates_dirs = [schema_root / "tables", schema_root / "views", schema_root]
-
-    for d in candidates_dirs:
+    for d in candidate_dirs:
         if not d.exists():
             continue
-        # priority patterns
         patterns = [
             f"*__{object_name_lower}_table.sql",
             f"*__{object_name_lower}_{object_type.lower()}.sql",
@@ -184,19 +190,17 @@ def find_existing_object_file(schema_root: Path, object_name: str, object_type: 
             f"*{object_name_lower}*.sql",
         ]
         matches = []
-        for p in patterns:
-            matches += list(d.glob(p))
+        for pat in patterns:
+            matches.extend(list(d.glob(pat)))
         if matches:
             chosen = sorted(matches, key=lambda p: len(p.name))[0]
             logger.info(f"✅ Will update existing DDL file: {chosen}")
             return chosen
-    # no existing file found
     return None
 
-def backup_and_write(target_file: Path, new_content: str, dry_run: bool):
-    schema_root = target_file.parent.parent  # e.g. snowflake/hr/tables -> parent.parent = snowflake/hr
-    if not schema_root.exists():
-        schema_root = target_file.parent
+def backup_and_overwrite(target_file: Path, new_content: str, dry_run: bool):
+    # attempt to determine schema root for backup dir
+    schema_root = target_file.parent.parent if target_file.parent and target_file.parent.parent else target_file.parent
     backup_dir = schema_root / "backup"
     timestamp = int(time.time())
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -204,21 +208,20 @@ def backup_and_write(target_file: Path, new_content: str, dry_run: bool):
     if dry_run:
         logger.info(f"🔍 [DRY RUN] Would backup {target_file} -> {backup_path} and overwrite")
         return
-    # copy current content to backup
     try:
         if target_file.exists():
-            target_file.replace(target_file)  # no-op but ensures permission
-            target_file_content = target_file.read_text(encoding="utf-8")
-            backup_path.write_text(target_file_content, encoding="utf-8")
+            content = target_file.read_text(encoding="utf-8")
+            backup_path.write_text(content, encoding="utf-8")
             logger.info(f"📦 Backed up existing file to {backup_path}")
-        # overwrite with new content
         target_file.write_text(new_content, encoding="utf-8")
         logger.info(f"✏️ Overwrote {target_file} with refreshed DDL")
     except Exception as e:
         logger.error(f"❌ Failed to backup/write {target_file}: {e}")
         raise
 
-def update_object_file(sf_root: Path, changed_file: Path, conn: snowflake.connector.SnowflakeConnection, dry_run: bool, git_name: str, git_email: str, target_branch: Optional[str]):
+# ---------------- core processing ----------------
+def update_object_file(sf_root: Path, changed_file: Path, conn: snowflake.connector.SnowflakeConnection,
+                       dry_run: bool, git_name: str, git_email: str, target_branch: Optional[str]):
     try:
         sql_content = changed_file.read_text(encoding="utf-8")
     except Exception as e:
@@ -230,33 +233,43 @@ def update_object_file(sf_root: Path, changed_file: Path, conn: snowflake.connec
         logger.info(f"ℹ️ No ALTER statements in {changed_file.name}")
         return
 
-    database = os.getenv("SNOWFLAKE_DATABASE")
-    if not database:
+    env_db = os.getenv("SNOWFLAKE_DATABASE")
+    if not env_db:
         logger.error("❌ SNOWFLAKE_DATABASE not set")
         return
 
-    # find schema root (folder under sf_root that matches schema)
-    for obj_type, schema_name, obj_name in alters:
-        # if schema in SQL, use it, else derive from path: snowflake/<schema>/tables/...
-        if not schema_name:
+    for obj_type, stmt_db, stmt_schema, obj_name in alters:
+        # Determine DB to use: prefer db from statement else SNOWFLAKE_DATABASE
+        use_db = stmt_db or env_db
+
+        # Determine schema: prefer stmt_schema else derive from path
+        if stmt_schema:
+            use_schema = stmt_schema
+        else:
             try:
                 rel = changed_file.relative_to(sf_root)
                 parts = rel.parts
-                # expected rel: <schema>/tables/<file.sql> or <schema>/<file.sql>
                 if len(parts) >= 2 and parts[1].lower() in ("tables", "views"):
                     schema_guess = parts[0]
-                else:
+                elif len(parts) >= 1:
                     schema_guess = parts[0]
-                schema_name = schema_guess.upper()
-            except Exception:
-                # fallback: parent.parent
-                if changed_file.parent and changed_file.parent.parent:
-                    schema_name = changed_file.parent.parent.name.upper()
                 else:
-                    logger.warning(f"⚠️ Could not derive schema for {changed_file}; skipping")
+                    schema_guess = None
+                if not schema_guess:
+                    # fallback: parent.parent
+                    schema_guess = changed_file.parent.parent.name if changed_file.parent and changed_file.parent.parent else None
+                if not schema_guess:
+                    logger.warning(f"⚠️ Could not derive schema for {changed_file}; skipping {obj_name}")
+                    continue
+                use_schema = schema_guess.upper()
+            except Exception:
+                use_schema = changed_file.parent.parent.name.upper() if changed_file.parent and changed_file.parent.parent else None
+                if not use_schema:
+                    logger.warning(f"⚠️ Could not derive schema for {changed_file}; skipping {obj_name}")
                     continue
 
-        full_name = f"{database}.{schema_name}.{obj_name}"
+        full_name = f"{use_db}.{use_schema}.{obj_name}"
+        logger.debug(f"Computed use_db={use_db}, use_schema={use_schema}, obj_name={obj_name}")
         logger.info(f"🔄 Processing {obj_type}: {full_name}")
 
         ddl = get_current_ddl(conn, obj_type, full_name)
@@ -264,50 +277,45 @@ def update_object_file(sf_root: Path, changed_file: Path, conn: snowflake.connec
             logger.warning(f"⚠️ Skipping {full_name} - could not retrieve DDL")
             continue
 
-        # locate schema root folder under sf_root
+        # find the schema root folder under sf_root
         schema_root = None
         for p in sf_root.iterdir():
-            if p.is_dir() and p.name.lower() == schema_name.lower():
+            if p.is_dir() and p.name.lower() == use_schema.lower():
                 schema_root = p
                 break
         if not schema_root:
-            # fallback
             schema_root = changed_file.parent.parent if changed_file.parent and changed_file.parent.parent else changed_file.parent
 
-        # find existing file — **do not create new**
         target_file = find_existing_object_file(schema_root, obj_name, obj_type)
         if not target_file:
-            logger.warning(f"⚠️ No existing DDL file found for {full_name} under {schema_root}; skipping (will not create new file).")
+            logger.warning(f"⚠️ No existing DDL file found for {full_name} under {schema_root}; skipping (will not create new).")
             continue
 
-        # backup + write
         ddl_content = ddl.strip() + "\n"
-        backup_and_write(target_file, ddl_content, dry_run)
+        backup_and_overwrite(target_file, ddl_content, dry_run)
 
-        # commit & push (only if not dry-run)
         if not dry_run:
-            # ensure git identity
             try:
-                configure_git_credentials(git_name, git_email)
-            except RuntimeError as e:
-                logger.error(f"❌ {e}")
-            commit_message = f"chore: refresh {obj_type.lower()} DDL for {full_name}"
-            git_add_commit_push(target_file, commit_message, target_branch, dry_run)
+                configure_git_identity(git_name, git_email)
+            except Exception as e:
+                logger.error(f"❌ Failed to configure git identity: {e}")
+            commit_msg = f"chore: refresh {obj_type.lower()} DDL for {full_name}"
+            git_add_commit_push(target_file, commit_msg, target_branch, dry_run)
 
-# ---- main ----
+# ---------------- main ----------------
 def main():
-    parser = argparse.ArgumentParser(description="Refresh object DDL from Snowflake; overwrite only existing DDL files.")
-    parser.add_argument("--snowflake-root", required=True, help="Root folder that contains schema subfolders (e.g. 'snowflake')")
+    parser = argparse.ArgumentParser(description="Refresh object DDL from Snowflake (overwrite only existing DDL files).")
+    parser.add_argument("--snowflake-root", required=True, help="Root folder that contains schema folders (e.g. 'snowflake')")
     parser.add_argument("--dry-run", action="store_true", help="Do not write or push; only log")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+    global logger
+    logger = setup_logging(debug=args.debug)
 
     sf_root = Path(args.snowflake_root)
     if not sf_root.exists():
-        logger.error(f"❌ Provided root not found: {sf_root}")
+        logger.error(f"❌ Provided snowflake root does not exist: {sf_root}")
         sys.exit(1)
 
     logger.info("🚀 Starting DDL synchronization process")
@@ -320,10 +328,9 @@ def main():
 
         conn, key_path = get_snowflake_connection()
         try:
-            # git identity / push target
             git_name = os.getenv("GIT_USER_NAME", "DDL Sync Bot")
             git_email = os.getenv("GIT_USER_EMAIL", "ddl-sync@noreply.github.com")
-            target_branch = os.getenv("TARGET_PUSH_BRANCH")  # set this in CI to the branch you'd like to update
+            target_branch = os.getenv("TARGET_PUSH_BRANCH")  # set in CI: github.event.pull_request.base.ref
             logger.debug(f"git_name={git_name}, git_email={git_email}, target_branch={target_branch}")
 
             for f in altered_files:
@@ -346,4 +353,5 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
+    logger = setup_logging(False)
     main()
