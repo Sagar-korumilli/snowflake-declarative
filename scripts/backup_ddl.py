@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""
+backup_ddl.py
+
+- Supports ALTER TABLE object, ALTER TABLE schema.object, ALTER TABLE db.schema.object
+- Only updates existing DDL files (will NOT create new files)
+- Creates a timestamped backup under <schema>/backup/ before overwriting
+- Pushes commits back to a target branch (TARGET_PUSH_BRANCH env) to handle CI detached HEAD
+- Use --dry-run and --debug for safe testing
+
+Example:
+  python scripts/backup_ddl.py --snowflake-root snowflake --dry-run --debug
+"""
 from __future__ import annotations
 import argparse
 import logging
@@ -17,6 +29,8 @@ def setup_logging(debug: bool = False) -> logging.Logger:
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
     return logging.getLogger(__name__)
+
+logger = setup_logging(False)
 
 # ---------------- Snowflake ----------------
 def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection, str]:
@@ -113,43 +127,55 @@ def git_add_commit_push(file_path: Path, message: str, target_branch: Optional[s
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Git operation failed for {file_path}: {e}")
 
-ALTER_RE = re.compile(
-    r'''
-    ALTER\s+
-    (TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)   # object type
-    \s+
-    (?:
-        (?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))  # optional db (group 2/3/4)
-        \.
-    )?
-    (?:
-        (?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))  # optional schema (group 5/6/7)
-        \.
-    )?
-    (?:
-        (?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))  # object (group 8/9/10)
-    )
-    ''',
-    re.IGNORECASE | re.VERBOSE,
+# ---------------- SQL detection/parsing ----------------
+# We will first capture the dotted identifier string (possibly quoted), then tokenize it.
+MAIN_PATTERN = re.compile(
+    r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+'
+    r'((?:"[^"]+"|`[^`]+`|[A-Za-z0-9_]+)(?:\.(?:"[^"]+"|`[^`]+`|[A-Za-z0-9_]+))*)',
+    re.IGNORECASE
 )
+TOKEN_PATTERN = re.compile(r'(?:"([^"]+)"|`([^`]+)`|([A-Za-z0-9_]+))')
 
 def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str], Optional[str], str]]:
     """
-    Returns list of tuples: (OBJECT_TYPE, optional DB, optional SCHEMA, OBJECT)
-    All returned names are upper-cased and unquoted.
+    Return list of tuples: (OBJECT_TYPE, optional DB_NAME, optional SCHEMA_NAME, OBJECT_NAME)
+
+    Interpretation rules:
+      - 1 token -> object
+      - 2 tokens -> schema.object
+      - 3 tokens -> db.schema.object
+    Quoted identifiers with " or ` are supported (simple handling).
     """
     results: List[Tuple[str, Optional[str], Optional[str], str]] = []
-    for m in ALTER_RE.finditer(sql_content):
+
+    for m in MAIN_PATTERN.finditer(sql_content):
         obj_type = m.group(1).upper()
-        # db can be in group 2,3,4
-        db = (m.group(2) or m.group(3) or m.group(4) or None)
-        schema = (m.group(5) or m.group(6) or m.group(7) or None)
-        obj = (m.group(8) or m.group(9) or m.group(10))
-        # normalize
-        db_u = db.upper() if db else None
-        schema_u = schema.upper() if schema else None
-        obj_u = obj.upper()
-        results.append((obj_type, db_u, schema_u, obj_u))
+        identifier = m.group(2)
+
+        tokens: List[str] = []
+        for tm in TOKEN_PATTERN.finditer(identifier):
+            token = tm.group(1) or tm.group(2) or tm.group(3)
+            tokens.append(token.upper())
+
+        if len(tokens) == 1:
+            db = None
+            schema = None
+            obj = tokens[0]
+        elif len(tokens) == 2:
+            # interpret as schema.object
+            db = None
+            schema = tokens[0]
+            obj = tokens[1]
+        elif len(tokens) == 3:
+            db = tokens[0]
+            schema = tokens[1]
+            obj = tokens[2]
+        else:
+            logger.warning(f"⚠️ Skipping ALTER with unexpected identifier form: '{identifier}'")
+            continue
+
+        results.append((obj_type, db, schema, obj))
+
     return results
 
 def find_changed_sql_files(sf_root: str) -> List[Path]:
@@ -163,7 +189,7 @@ def find_changed_sql_files(sf_root: str) -> List[Path]:
             continue
         try:
             txt = p.read_text(encoding="utf-8")
-            if re.search(r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+', txt, re.IGNORECASE):
+            if MAIN_PATTERN.search(txt):
                 altered.append(p)
                 logger.info(f"🔍 Found ALTER statement in: {p}")
         except Exception as e:
@@ -256,7 +282,6 @@ def update_object_file(sf_root: Path, changed_file: Path, conn: snowflake.connec
                 else:
                     schema_guess = None
                 if not schema_guess:
-                    # fallback: parent.parent
                     schema_guess = changed_file.parent.parent.name if changed_file.parent and changed_file.parent.parent else None
                 if not schema_guess:
                     logger.warning(f"⚠️ Could not derive schema for {changed_file}; skipping {obj_name}")
@@ -269,7 +294,7 @@ def update_object_file(sf_root: Path, changed_file: Path, conn: snowflake.connec
                     continue
 
         full_name = f"{use_db}.{use_schema}.{obj_name}"
-        logger.debug(f"Computed use_db={use_db}, use_schema={use_schema}, obj_name={obj_name}")
+        logger.debug(f"Computed use_db={use_db}, use_schema={use_schema}, obj_name={obj_name} -> full_name={full_name}")
         logger.info(f"🔄 Processing {obj_type}: {full_name}")
 
         ddl = get_current_ddl(conn, obj_type, full_name)
