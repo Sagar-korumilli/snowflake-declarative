@@ -139,6 +139,7 @@ jobs:
           SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+          TARGET_PUSH_BRANCH:              ${{ github.event.pull_request.base.ref }}
         run: python scripts/backup_ddl.py --snowflake-root snowflake/
 
       - name: Clean up temporary files
