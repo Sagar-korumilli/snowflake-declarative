@@ -130,7 +130,7 @@ def git_add_commit_push(file_path: Path, message: str, target_branch: Optional[s
 # ---------------- SQL detection/parsing ----------------
 # We will first capture the dotted identifier string (possibly quoted), then tokenize it.
 MAIN_PATTERN = re.compile(
-    r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+'
+    r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+' 
     r'((?:"[^"]+"|`[^`]+`|[A-Za-z0-9_]+)(?:\.(?:"[^"]+"|`[^`]+`|[A-Za-z0-9_]+))*)',
     re.IGNORECASE
 )
@@ -201,27 +201,52 @@ def find_existing_object_file(schema_root: Path, object_name: str, object_type: 
     """
     Search for an existing DDL file that likely owns the object.
     Return Path or None (do NOT create files).
-    Search order: tables/, views/, schema root.
+    Search order (case-insensitive):
+      1) exact '__{object}.sql' (shortest filename wins)
+      2) '__{object}_table.sql' or '__{object}_{type}.sql'
+      3) any file that contains the object name
+    Searches candidate directories: tables/, views/, schema root.
     """
     object_name_lower = object_name.lower()
     candidate_dirs = [schema_root / "tables", schema_root / "views", schema_root]
 
+    checked_files = []
+    exact_matches = []
+    type_matches = []
+    contains_matches = []
+
     for d in candidate_dirs:
-        if not d.exists():
+        if not d.exists() or not d.is_dir():
             continue
-        patterns = [
-            f"*__{object_name_lower}_table.sql",
-            f"*__{object_name_lower}_{object_type.lower()}.sql",
-            f"*__{object_name_lower}.sql",
-            f"*{object_name_lower}*.sql",
-        ]
-        matches = []
-        for pat in patterns:
-            matches.extend(list(d.glob(pat)))
-        if matches:
-            chosen = sorted(matches, key=lambda p: len(p.name))[0]
+        for p in d.iterdir():
+            if not p.is_file() or p.suffix.lower() != ".sql":
+                continue
+            checked_files.append(p)
+            name_lower = p.name.lower()
+
+            # exact __{object}.sql (e.g. V006__l_cin_820.sql)
+            if name_lower.endswith(f"__{object_name_lower}.sql"):
+                exact_matches.append(p)
+                continue
+
+            # variations: __{object}_table.sql or __{object}_{object_type}.sql
+            if name_lower.endswith(f"__{object_name_lower}_table.sql") or name_lower.endswith(f"__{object_name_lower}_{object_type.lower()}.sql"):
+                type_matches.append(p)
+                continue
+
+            # contains the object name anywhere
+            if object_name_lower in name_lower:
+                contains_matches.append(p)
+
+    # choose the best candidate (prefer shortest filename among matches)
+    for candidate_list in (exact_matches, type_matches, contains_matches):
+        if candidate_list:
+            chosen = sorted(candidate_list, key=lambda p: len(p.name))[0]
             logger.info(f"✅ Will update existing DDL file: {chosen}")
             return chosen
+
+    # nothing found
+    logger.debug(f"🔎 Checked files for object '{object_name}': {[p.name for p in checked_files]}")
     return None
 
 def backup_and_overwrite(target_file: Path, new_content: str, dry_run: bool):
