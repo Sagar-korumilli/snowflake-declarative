@@ -45,7 +45,7 @@ def get_snowflake_connection() -> Tuple[snowflake.connector.SnowflakeConnection,
     ]
     for v in required:
         if not os.getenv(v):
-            raise RuntimeError(f"❌ Missing environment variable: {v}")
+            raise RuntimeError(f"❌ Missing environments variable: {v}")
 
     # write private key to temporary file
     with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".pem") as tf:
