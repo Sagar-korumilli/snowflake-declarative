@@ -123,13 +123,14 @@ jobs:
 
   # ---------- Rollback jobs (only one will run based on determine output) ----------
   rollback-development:
-    name: Rollback → development
-    needs: determine
-    if: ${{ needs.determine.outputs.target_env == 'development' }}
+    if: needs.determine.outputs.env == 'development'
     runs-on: ubuntu-latest
-    environment: development
-    timeout-minutes: 30
+    environment:
+      name: development
     steps:
+      - name: Rollback Development
+        run: echo "Rolling back in development"
+        timeout-minutes: 30
       - name: Checkout repo (full)
         uses: actions/checkout@v4
         with:
