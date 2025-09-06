@@ -24,7 +24,7 @@ permissions:
   pull-requests: read
   actions: read
 
-# provide personal access token (used only to query GH API for PR/workflow runs)
+# PAT only used to talk to GitHub API during determine
 env:
   GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
@@ -49,7 +49,6 @@ jobs:
           PR_INPUT: ${{ github.event.inputs.pr_number }}
         run: |
           set -euo pipefail
-
           API="https://api.github.com/repos/${REPO}"
 
           if [ -n "${PR_INPUT}" ]; then
@@ -70,161 +69,43 @@ jobs:
 
           echo "PR: $pr_number, base_ref: $base_ref, merge_sha: $merge_sha"
 
-          target_env=""
-
+          # Map base_ref -> environment, keep your release logic if needed
           case "$base_ref" in
-            dev)
-              target_env="development"
-              ;;
-            main)
-              target_env="production"
-              ;;
-            release)
-              if [ -z "$merge_sha" ] || [ "$merge_sha" = "null" ]; then
-                echo "Warning: merge_commit_sha missing; defaulting release -> qa."
-                target_env="qa"
-              else
-                echo "Looking for workflow runs with head_sha=${merge_sha} to decide between QA / UAT..."
-                runs=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API}/actions/runs?head_sha=${merge_sha}&per_page=50")
-                # adjust the workflow name below if yours differs
-                run_id=$(echo "$runs" | jq -r '.workflow_runs[] | select(.name=="❄️ Snowflake Full Deploy") | .id' | head -n1 || true)
-
-                if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
-                  echo "Found workflow run id: $run_id — fetching jobs..."
-                  jobs=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API}/actions/runs/${run_id}/jobs")
-                  uat_ok=$(echo "$jobs" | jq -r '.jobs[] | select(.name=="deploy-uat") | .conclusion' | grep -E '^success$' || true)
-                  qa_ok=$(echo "$jobs" | jq -r '.jobs[] | select(.name=="deploy-qa") | .conclusion' | grep -E '^success$' || true)
-
-                  if [ -n "$uat_ok" ]; then
-                    target_env="uat"
-                  elif [ -n "$qa_ok" ]; then
-                    target_env="qa"
-                  else
-                    echo "No successful deploy-uat/deploy-qa job found in that run — defaulting release -> qa"
-                    target_env="qa"
-                  fi
-                else
-                  echo "No deploy workflow run found for merge sha; defaulting release -> qa"
-                  target_env="qa"
-                fi
-              fi
-              ;;
-            *)
-              echo "Unknown base.ref '$base_ref' — defaulting to 'qa'"
-              target_env="qa"
-              ;;
+            dev)     target_env="development" ;;
+            main)    target_env="production" ;;
+            release) target_env="qa" ;;  # keep it simple; add UAT detection here if you like
+            *)       target_env="qa" ;;
           esac
 
-          echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
-          echo "base_ref=${base_ref}"   >> "$GITHUB_OUTPUT"
-          echo "merge_sha=${merge_sha}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${pr_number}"  >> "$GITHUB_OUTPUT"
+          echo "base_ref=${base_ref}"    >> "$GITHUB_OUTPUT"
+          echo "merge_sha=${merge_sha}"  >> "$GITHUB_OUTPUT"
           echo "target_env=${target_env}" >> "$GITHUB_OUTPUT"
           echo "Determined target_env=${target_env} for PR ${pr_number}"
 
-  # ---------- Rollback jobs (only one will run based on determine output) ----------
-  rollback-development:
-    if: needs.determine.outputs.env == 'development'
-    runs-on: ubuntu-latest
-    environment:
-      name: development
-    steps:
-      - name: Rollback Development
-        run: echo "Rolling back in development"
-        timeout-minutes: 30
-      - name: Checkout repo (full)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure git identity
-        run: |
-          git config user.name "Sagar-korumilli"
-          git config user.email "sagar.korumilli11@gmail.com"
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps
-        run: |
-          pip install --upgrade pip
-          pip install snowflake-connector-python requests GitPython
-
-      - name: Diagnostics — which SNOWFLAKE_* vars are present?
-        run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v+x}" ]; then
-              echo "$v: UNSET"
-            elif [ -z "${!v}" ]; then
-              echo "$v: SET but empty"
-            else
-              echo "$v: SET"
-            fi
-          done
-
-      - name: Validate Snowflake env vars (dev)
-        run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v}" ]; then
-              echo "❌ Missing $v"
-              exit 1
-            fi
-          done
-
-      - name: Write private key file
-        run: |
-          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
-          chmod 600 key.pem
-
-      - name: Generate connections.toml
-        run: |
-          cat > connections.toml <<EOF
-          [connections]
-            account             = "${SNOWFLAKE_ACCOUNT}"
-            user                = "${SNOWFLAKE_USER}"
-            private_key_file    = "key.pem"
-            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-            authenticator       = "snowflake_jwt"
-            role                = "${SNOWFLAKE_ROLE}"
-            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
-            database            = "${SNOWFLAKE_DATABASE}"
-          EOF
-          chmod 600 connections.toml
-
-      - name: Run rollback script (dev)
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          set -e
-          REPO="${{ github.repository }}"
-          PR_INPUT="${{ needs.determine.outputs.pr_number }}"
-          PATH_FILTER="${{ github.event.inputs.path }}"
-          DRY="${{ github.event.inputs.dry_run }}"
-
-          CMD="python scripts/rollback.py --repo \"$REPO\" --token \"${GH_TOKEN}\" --path \"$PATH_FILTER\" --connections-file connections.toml --connection-name connections"
-          if [ -n "$PR_INPUT" ]; then CMD="$CMD --pr $PR_INPUT"; fi
-          if [ "$DRY" = "true" ]; then CMD="$CMD --dry-run"; fi
-
-          echo "Executing: $CMD"
-          eval $CMD
-
-      - name: Clean up
-        if: always()
-        run: |
-          rm -f key.pem connections.toml
-          echo "✔️ Rollback to development complete."
-
-  rollback-qa:
-    name: Rollback → qa
+  rollback:
+    name: Rollback → ${{ matrix.env }}
     needs: determine
-    if: ${{ needs.determine.outputs.target_env == 'qa' }}
+    if: needs.determine.outputs.target_env == matrix.env
     runs-on: ubuntu-latest
-    environment: qa
     timeout-minutes: 30
+    strategy:
+      matrix:
+        env: [development, qa, uat, production]
+    environment: ${{ matrix.env }}
+
+    # 👇 THIS maps the selected environment's secrets to real env vars
+    env:
+      SNOWFLAKE_ACCOUNT:                 ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:                    ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY:             ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:  ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE:                    ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE:               ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE:                ${{ secrets.SNOWFLAKE_DATABASE }}
+
     steps:
-      - name: Checkout repo (full)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -233,8 +114,7 @@ jobs:
           git config user.name "Sagar-korumilli"
           git config user.email "sagar.korumilli11@gmail.com"
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -255,7 +135,7 @@ jobs:
             fi
           done
 
-      - name: Validate Snowflake env vars (qa)
+      - name: Validate Snowflake env vars
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
             if [ -z "${!v}" ]; then
@@ -273,18 +153,18 @@ jobs:
         run: |
           cat > connections.toml <<EOF
           [connections]
-            account             = "${SNOWFLAKE_ACCOUNT}"
-            user                = "${SNOWFLAKE_USER}"
-            private_key_file    = "key.pem"
-            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-            authenticator       = "snowflake_jwt"
-            role                = "${SNOWFLAKE_ROLE}"
-            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
-            database            = "${SNOWFLAKE_DATABASE}"
+          account             = "${SNOWFLAKE_ACCOUNT}"
+          user                = "${SNOWFLAKE_USER}"
+          private_key_file    = "key.pem"
+          private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
+          authenticator       = "snowflake_jwt"
+          role                = "${SNOWFLAKE_ROLE}"
+          warehouse           = "${SNOWFLAKE_WAREHOUSE}"
+          database            = "${SNOWFLAKE_DATABASE}"
           EOF
           chmod 600 connections.toml
 
-      - name: Run rollback script (qa)
+      - name: Run rollback script
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
@@ -294,7 +174,7 @@ jobs:
           PATH_FILTER="${{ github.event.inputs.path }}"
           DRY="${{ github.event.inputs.dry_run }}"
 
-          CMD="python scripts/rollback.py --repo \"$REPO\" --token \"${GH_TOKEN}\" --path \"$PATH_FILTER\" --connections-file connections.toml --connection-name connections"
+          CMD="python scripts/rollback.py --repo \"$REPO\" --token \"$GH_TOKEN\" --path \"$PATH_FILTER\" --connections-file connections.toml --connection-name connections"
           if [ -n "$PR_INPUT" ]; then CMD="$CMD --pr $PR_INPUT"; fi
           if [ "$DRY" = "true" ]; then CMD="$CMD --dry-run"; fi
 
@@ -303,190 +183,4 @@ jobs:
 
       - name: Clean up
         if: always()
-        run: |
-          rm -f key.pem connections.toml
-          echo "✔️ Rollback to QA complete."
-
-  rollback-uat:
-    name: Rollback → uat
-    needs: determine
-    if: ${{ needs.determine.outputs.target_env == 'uat' }}
-    runs-on: ubuntu-latest
-    environment: uat
-    timeout-minutes: 30
-    steps:
-      - name: Checkout repo (full)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure git identity
-        run: |
-          git config user.name "Sagar-korumilli"
-          git config user.email "sagar.korumilli11@gmail.com"
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps
-        run: |
-          pip install --upgrade pip
-          pip install snowflake-connector-python requests GitPython
-
-      - name: Diagnostics — which SNOWFLAKE_* vars are present?
-        run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v+x}" ]; then
-              echo "$v: UNSET"
-            elif [ -z "${!v}" ]; then
-              echo "$v: SET but empty"
-            else
-              echo "$v: SET"
-            fi
-          done
-
-      - name: Validate Snowflake env vars (uat)
-        run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v}" ]; then
-              echo "❌ Missing $v"
-              exit 1
-            fi
-          done
-
-      - name: Write private key file
-        run: |
-          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
-          chmod 600 key.pem
-
-      - name: Generate connections.toml
-        run: |
-          cat > connections.toml <<EOF
-          [connections]
-            account             = "${SNOWFLAKE_ACCOUNT}"
-            user                = "${SNOWFLAKE_USER}"
-            private_key_file    = "key.pem"
-            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-            authenticator       = "snowflake_jwt"
-            role                = "${SNOWFLAKE_ROLE}"
-            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
-            database            = "${SNOWFLAKE_DATABASE}"
-          EOF
-          chmod 600 connections.toml
-
-      - name: Run rollback script (uat)
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          set -e
-          REPO="${{ github.repository }}"
-          PR_INPUT="${{ needs.determine.outputs.pr_number }}"
-          PATH_FILTER="${{ github.event.inputs.path }}"
-          DRY="${{ github.event.inputs.dry_run }}"
-
-          CMD="python scripts/rollback.py --repo \"$REPO\" --token \"${GH_TOKEN}\" --path \"$PATH_FILTER\" --connections-file connections.toml --connection-name connections"
-          if [ -n "$PR_INPUT" ]; then CMD="$CMD --pr $PR_INPUT"; fi
-          if [ "$DRY" = "true" ]; then CMD="$CMD --dry-run"; fi
-
-          echo "Executing: $CMD"
-          eval $CMD
-
-      - name: Clean up
-        if: always()
-        run: |
-          rm -f key.pem connections.toml
-          echo "✔️ Rollback to UAT complete."
-
-  rollback-production:
-    name: Rollback → production
-    needs: determine
-    if: ${{ needs.determine.outputs.target_env == 'production' }}
-    runs-on: ubuntu-latest
-    environment: production
-    timeout-minutes: 30
-    steps:
-      - name: Checkout repo (full)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure git identity
-        run: |
-          git config user.name "Sagar-korumilli"
-          git config user.email "sagar.korumilli11@gmail.com"
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps
-        run: |
-          pip install --upgrade pip
-          pip install snowflake-connector-python requests GitPython
-
-      - name: Diagnostics — which SNOWFLAKE_* vars are present?
-        run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v+x}" ]; then
-              echo "$v: UNSET"
-            elif [ -z "${!v}" ]; then
-              echo "$v: SET but empty"
-            else
-              echo "$v: SET"
-            fi
-          done
-
-      - name: Validate Snowflake env vars (prod)
-        run: |
-          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
-            if [ -z "${!v}" ]; then
-              echo "❌ Missing $v"
-              exit 1
-            fi
-          done
-
-      - name: Write private key file
-        run: |
-          echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
-          chmod 600 key.pem
-
-      - name: Generate connections.toml
-        run: |
-          cat > connections.toml <<EOF
-          [connections]
-            account             = "${SNOWFLAKE_ACCOUNT}"
-            user                = "${SNOWFLAKE_USER}"
-            private_key_file    = "key.pem"
-            private_key_file_pwd= "${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE}"
-            authenticator       = "snowflake_jwt"
-            role                = "${SNOWFLAKE_ROLE}"
-            warehouse           = "${SNOWFLAKE_WAREHOUSE}"
-            database            = "${SNOWFLAKE_DATABASE}"
-          EOF
-          chmod 600 connections.toml
-
-      - name: Run rollback script (prod)
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
-          set -e
-          REPO="${{ github.repository }}"
-          PR_INPUT="${{ needs.determine.outputs.pr_number }}"
-          PATH_FILTER="${{ github.event.inputs.path }}"
-          DRY="${{ github.event.inputs.dry_run }}"
-
-          CMD="python scripts/rollback.py --repo \"$REPO\" --token \"${GH_TOKEN}\" --path \"$PATH_FILTER\" --connections-file connections.toml --connection-name connections"
-          if [ -n "$PR_INPUT" ]; then CMD="$CMD --pr $PR_INPUT"; fi
-          if [ "$DRY" = "true" ]; then CMD="$CMD --dry-run"; fi
-
-          echo "Executing: $CMD"
-          eval $CMD
-
-      - name: Clean up
-        if: always()
-        run: |
-          rm -f key.pem connections.toml
-          echo "✔️ Rollback to production complete."
+        run: rm -f key.pem connections.toml
