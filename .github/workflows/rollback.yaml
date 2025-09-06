@@ -93,8 +93,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --token "$GH_TOKEN" \
             --path "${{ github.event.inputs.path }}" \
-            --pr "${{ needs.determine.outputs.pr_number }}" \
-            --env development
+            --pr "${{ needs.determine.outputs.pr_number }}" 
 
   rollback-qa:
     name: Rollback → qa
@@ -116,8 +115,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --token "$GH_TOKEN" \
             --path "${{ github.event.inputs.path }}" \
-            --pr "${{ needs.determine.outputs.pr_number }}" \
-            --env qa
+            --pr "${{ needs.determine.outputs.pr_number }}" 
 
   rollback-uat:
     name: Rollback → uat
@@ -139,8 +137,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --token "$GH_TOKEN" \
             --path "${{ github.event.inputs.path }}" \
-            --pr "${{ needs.determine.outputs.pr_number }}" \
-            --env uat
+            --pr "${{ needs.determine.outputs.pr_number }}" 
 
   rollback-production:
     name: Rollback → production
@@ -162,5 +159,4 @@ jobs:
             --repo "${{ github.repository }}" \
             --token "$GH_TOKEN" \
             --path "${{ github.event.inputs.path }}" \
-            --pr "${{ needs.determine.outputs.pr_number }}" \
-            --env production
+            --pr "${{ needs.determine.outputs.pr_number }}" 
