@@ -59,7 +59,7 @@ jobs:
 
           case "$base_ref" in
             dev) target_env="development" ;;
-            release) target_env="qa" ;; # adjust if you want UAT logic here
+            release) target_env="qa" ;; # adjust if you want UAT logic
             main) target_env="production" ;;
             *) target_env="qa" ;;
           esac
@@ -76,9 +76,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install snowflake-connector-python requests GitPython
+
       - name: Run rollback in dev
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           echo "Rolling back in development..."
           python scripts/rollback.py \
@@ -96,10 +104,13 @@ jobs:
     environment: qa
     steps:
       - uses: actions/checkout@v4
-      - name: Run rollback in QA
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          pip install --upgrade pip
+          pip install snowflake-connector-python requests GitPython
+      - run: |
           echo "Rolling back in QA..."
           python scripts/rollback.py \
             --repo "${{ github.repository }}" \
@@ -116,10 +127,13 @@ jobs:
     environment: uat
     steps:
       - uses: actions/checkout@v4
-      - name: Run rollback in UAT
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          pip install --upgrade pip
+          pip install snowflake-connector-python requests GitPython
+      - run: |
           echo "Rolling back in UAT..."
           python scripts/rollback.py \
             --repo "${{ github.repository }}" \
@@ -136,10 +150,13 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - name: Run rollback in prod
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-        run: |
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          pip install --upgrade pip
+          pip install snowflake-connector-python requests GitPython
+      - run: |
           echo "Rolling back in production..."
           python scripts/rollback.py \
             --repo "${{ github.repository }}" \
