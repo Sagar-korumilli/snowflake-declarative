@@ -73,6 +73,15 @@ jobs:
     if: ${{ needs.determine.outputs.target_env == 'development' }}
     runs-on: ubuntu-latest
     environment: development
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+      SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WH: ${{ secrets.SNOWFLAKE_WH }}
+      SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+      GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
