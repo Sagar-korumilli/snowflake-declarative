@@ -24,6 +24,7 @@ permissions:
   pull-requests: read
   actions: read
 
+# provide personal access token (used only to query GH API for PR/workflow runs)
 env:
   GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
@@ -51,13 +52,11 @@ jobs:
 
           API="https://api.github.com/repos/${REPO}"
 
-          # 1) Determine PR object (either user-supplied or latest merged)
           if [ -n "${PR_INPUT}" ]; then
             echo "Using provided PR: ${PR_INPUT}"
             pr_json=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API}/pulls/${PR_INPUT}")
           else
             echo "No PR provided — finding latest merged PR..."
-            # fetch recent closed PRs and pick first merged one
             pr_json=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API}/pulls?state=closed&per_page=50" | jq '[.[] | select(.merged_at != null)][0]')
             if [ "${pr_json}" = "null" ] || [ -z "${pr_json}" ]; then
               echo "No merged PRs found."
@@ -71,7 +70,6 @@ jobs:
 
           echo "PR: $pr_number, base_ref: $base_ref, merge_sha: $merge_sha"
 
-          # default target mapping
           target_env=""
 
           case "$base_ref" in
@@ -82,20 +80,18 @@ jobs:
               target_env="production"
               ;;
             release)
-              # check workflow runs for the deploy workflow using head_sha = merge_sha
               if [ -z "$merge_sha" ] || [ "$merge_sha" = "null" ]; then
                 echo "Warning: merge_commit_sha missing; defaulting release -> qa."
                 target_env="qa"
               else
                 echo "Looking for workflow runs with head_sha=${merge_sha} to decide between QA / UAT..."
                 runs=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API}/actions/runs?head_sha=${merge_sha}&per_page=50")
-                # pick the run for your deploy workflow by name (adjust name if different)
+                # adjust the workflow name below if yours differs
                 run_id=$(echo "$runs" | jq -r '.workflow_runs[] | select(.name=="❄️ Snowflake Full Deploy") | .id' | head -n1 || true)
 
                 if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
                   echo "Found workflow run id: $run_id — fetching jobs..."
                   jobs=$(curl -s -H "Authorization: token ${GH_TOKEN}" "${API}/actions/runs/${run_id}/jobs")
-                  # prefer deploy-uat success
                   uat_ok=$(echo "$jobs" | jq -r '.jobs[] | select(.name=="deploy-uat") | .conclusion' | grep -E '^success$' || true)
                   qa_ok=$(echo "$jobs" | jq -r '.jobs[] | select(.name=="deploy-qa") | .conclusion' | grep -E '^success$' || true)
 
@@ -119,14 +115,13 @@ jobs:
               ;;
           esac
 
-          # export outputs
           echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
           echo "base_ref=${base_ref}"   >> "$GITHUB_OUTPUT"
           echo "merge_sha=${merge_sha}" >> "$GITHUB_OUTPUT"
           echo "target_env=${target_env}" >> "$GITHUB_OUTPUT"
           echo "Determined target_env=${target_env} for PR ${pr_number}"
 
-  # RUN rollback job in the correct GitHub environment so environment secrets are resolved from that environment
+  # ---------- Rollback jobs (only one will run based on determine output) ----------
   rollback-development:
     name: Rollback → development
     needs: determine
@@ -139,18 +134,34 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Configure git identity
         run: |
           git config user.name "Sagar-korumilli"
           git config user.email "sagar.korumilli11@gmail.com"
-      - name: Setup Python
+
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps
         run: |
           pip install --upgrade pip
           pip install snowflake-connector-python requests GitPython
+
+      - name: Diagnostics — which SNOWFLAKE_* vars are present?
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v+x}" ]; then
+              echo "$v: UNSET"
+            elif [ -z "${!v}" ]; then
+              echo "$v: SET but empty"
+            else
+              echo "$v: SET"
+            fi
+          done
+
       - name: Validate Snowflake env vars (dev)
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
@@ -159,10 +170,12 @@ jobs:
               exit 1
             fi
           done
+
       - name: Write private key file
         run: |
           echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
           chmod 600 key.pem
+
       - name: Generate connections.toml
         run: |
           cat > connections.toml <<EOF
@@ -177,6 +190,7 @@ jobs:
             database            = "${SNOWFLAKE_DATABASE}"
           EOF
           chmod 600 connections.toml
+
       - name: Run rollback script (dev)
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -193,6 +207,7 @@ jobs:
 
           echo "Executing: $CMD"
           eval $CMD
+
       - name: Clean up
         if: always()
         run: |
@@ -211,18 +226,34 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Configure git identity
         run: |
           git config user.name "Sagar-korumilli"
           git config user.email "sagar.korumilli11@gmail.com"
-      - name: Setup Python
+
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps
         run: |
           pip install --upgrade pip
           pip install snowflake-connector-python requests GitPython
+
+      - name: Diagnostics — which SNOWFLAKE_* vars are present?
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v+x}" ]; then
+              echo "$v: UNSET"
+            elif [ -z "${!v}" ]; then
+              echo "$v: SET but empty"
+            else
+              echo "$v: SET"
+            fi
+          done
+
       - name: Validate Snowflake env vars (qa)
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
@@ -231,10 +262,12 @@ jobs:
               exit 1
             fi
           done
+
       - name: Write private key file
         run: |
           echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
           chmod 600 key.pem
+
       - name: Generate connections.toml
         run: |
           cat > connections.toml <<EOF
@@ -249,6 +282,7 @@ jobs:
             database            = "${SNOWFLAKE_DATABASE}"
           EOF
           chmod 600 connections.toml
+
       - name: Run rollback script (qa)
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -265,6 +299,7 @@ jobs:
 
           echo "Executing: $CMD"
           eval $CMD
+
       - name: Clean up
         if: always()
         run: |
@@ -283,18 +318,34 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Configure git identity
         run: |
           git config user.name "Sagar-korumilli"
           git config user.email "sagar.korumilli11@gmail.com"
-      - name: Setup Python
+
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps
         run: |
           pip install --upgrade pip
           pip install snowflake-connector-python requests GitPython
+
+      - name: Diagnostics — which SNOWFLAKE_* vars are present?
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v+x}" ]; then
+              echo "$v: UNSET"
+            elif [ -z "${!v}" ]; then
+              echo "$v: SET but empty"
+            else
+              echo "$v: SET"
+            fi
+          done
+
       - name: Validate Snowflake env vars (uat)
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
@@ -303,10 +354,12 @@ jobs:
               exit 1
             fi
           done
+
       - name: Write private key file
         run: |
           echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
           chmod 600 key.pem
+
       - name: Generate connections.toml
         run: |
           cat > connections.toml <<EOF
@@ -321,6 +374,7 @@ jobs:
             database            = "${SNOWFLAKE_DATABASE}"
           EOF
           chmod 600 connections.toml
+
       - name: Run rollback script (uat)
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -337,6 +391,7 @@ jobs:
 
           echo "Executing: $CMD"
           eval $CMD
+
       - name: Clean up
         if: always()
         run: |
@@ -355,18 +410,34 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Configure git identity
         run: |
           git config user.name "Sagar-korumilli"
           git config user.email "sagar.korumilli11@gmail.com"
-      - name: Setup Python
+
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install deps
         run: |
           pip install --upgrade pip
           pip install snowflake-connector-python requests GitPython
+
+      - name: Diagnostics — which SNOWFLAKE_* vars are present?
+        run: |
+          for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
+            if [ -z "${!v+x}" ]; then
+              echo "$v: UNSET"
+            elif [ -z "${!v}" ]; then
+              echo "$v: SET but empty"
+            else
+              echo "$v: SET"
+            fi
+          done
+
       - name: Validate Snowflake env vars (prod)
         run: |
           for v in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY SNOWFLAKE_PRIVATE_KEY_PASSPHRASE SNOWFLAKE_ROLE SNOWFLAKE_WAREHOUSE SNOWFLAKE_DATABASE; do
@@ -375,10 +446,12 @@ jobs:
               exit 1
             fi
           done
+
       - name: Write private key file
         run: |
           echo "$SNOWFLAKE_PRIVATE_KEY" > key.pem
           chmod 600 key.pem
+
       - name: Generate connections.toml
         run: |
           cat > connections.toml <<EOF
@@ -393,6 +466,7 @@ jobs:
             database            = "${SNOWFLAKE_DATABASE}"
           EOF
           chmod 600 connections.toml
+
       - name: Run rollback script (prod)
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
@@ -409,6 +483,7 @@ jobs:
 
           echo "Executing: $CMD"
           eval $CMD
+
       - name: Clean up
         if: always()
         run: |
