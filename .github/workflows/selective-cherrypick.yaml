@@ -56,7 +56,7 @@ jobs:
         run: |
           TIMESTAMP=$(date +"%Y%m%d%H%M%S")
           SAFE_SOURCE=$(echo "${{ github.event.inputs.source_branch }}" | tr '/' '-')
-          PR_BRANCH="${SAFE_SOURCE}/selective-${TIMESTAMP}"
+          PR_BRANCH="${SAFE_SOURCE}-selective-${TIMESTAMP}"
           git checkout -b "$PR_BRANCH" "origin/${{ github.event.inputs.target_branch }}"
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
 
