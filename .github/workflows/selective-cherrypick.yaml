@@ -81,4 +81,4 @@ jobs:
             --head "$PR_BRANCH" \
             --title "Selective PR: ${{ github.event.inputs.commits }}" \
             --body "Cherry-picked from '${{ github.event.inputs.source_branch }}':\n${{ github.event.inputs.commits }}"
-          gh pr merge "$PR_BRANCH" --merge --auto --admin
+          gh pr merge "$PR_BRANCH" --merge --auto
