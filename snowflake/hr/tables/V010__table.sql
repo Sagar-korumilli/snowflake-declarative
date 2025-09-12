@@ -1,1 +1,1 @@
-Select 2+3;
+Select 1+2+3;
