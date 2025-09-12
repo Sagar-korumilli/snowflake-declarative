@@ -1,0 +1,47 @@
+name: Auto-create PR from feature/* to dev
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'feature*'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gh
+
+      - name: Authenticate gh with PERSONAL_ACCESS_TOKEN
+        env:
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          echo "${PERSONAL_ACCESS_TOKEN}" | gh auth login --with-token
+
+      - name: Create PR if none exists
+        env:
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ github.event.repository.name }}
+          HEAD_BRANCH: ${{ github.ref_name }}
+          BASE_BRANCH: dev
+        run: |
+          # check for open PR from HEAD_BRANCH -> BASE_BRANCH
+          existing=$(gh pr list --repo "$GITHUB_OWNER/$GITHUB_REPO" --head "$GITHUB_OWNER:$HEAD_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[].number')
+          if [ -n "$existing" ]; then
+            echo "Open PR already exists: $existing"
+          else
+            gh pr create --repo "$GITHUB_OWNER/$GITHUB_REPO" --title "Auto PR: ${HEAD_BRANCH} → ${BASE_BRANCH}" \
+              --body "This PR was created automatically when \`${HEAD_BRANCH}\` was pushed." \
+              --base "$BASE_BRANCH" --head "$HEAD_BRANCH"
+            echo "Created PR for $HEAD_BRANCH -> $BASE_BRANCH"
+          fi
