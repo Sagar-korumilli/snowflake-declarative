@@ -1,0 +1,107 @@
+name: Create release branch and feature branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_branch:
+        description: 'Release branch name (format: release/<project>), e.g. release/project1'
+        required: true
+      feature_branch:
+        description: 'Feature branch name to create from release (format: feature/<project>, e.g. feature/project1). If empty, no feature branch is created.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  create_branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup variables
+        id: vars
+        run: |
+          RELEASE="${{ github.event.inputs.release_branch }}"
+          FEATURE="${{ github.event.inputs.feature_branch }}"
+          BASE="main"
+          echo "RELEASE=$RELEASE" >> $GITHUB_OUTPUT
+          echo "FEATURE=$FEATURE" >> $GITHUB_OUTPUT
+          echo "BASE=$BASE" >> $GITHUB_OUTPUT
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch remote branches
+        run: |
+          git fetch origin --prune --unshallow || true
+          git fetch origin ${{ steps.vars.outputs.BASE }}:$BASE
+
+      - name: Create release branch from main (if missing)
+        id: create_release
+        run: |
+          RELEASE="${{ steps.vars.outputs.RELEASE }}"
+          BASE="${{ steps.vars.outputs.BASE }}"
+          echo "Creating release branch: $RELEASE from $BASE"
+          if [ -z "$RELEASE" ]; then
+            echo "No release branch provided, exiting."
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$RELEASE"; then
+            echo "Remote branch $RELEASE already exists — skipping creation."
+            echo "CREATED=false" >> $GITHUB_OUTPUT
+          else
+            git checkout -b "$RELEASE" "origin/$BASE"
+            git push origin HEAD:"$RELEASE"
+            echo "CREATED=true" >> $GITHUB_OUTPUT
+          fi
+          echo "::set-output name=release::$RELEASE"
+
+      - name: Ensure local release branch checked out
+        run: |
+          RELEASE="${{ steps.vars.outputs.RELEASE }}"
+          if git show-ref --verify --quiet "refs/heads/$RELEASE"; then
+            git checkout "$RELEASE"
+          else
+            # try to create local from remote
+            git fetch origin "$RELEASE:$RELEASE" || true
+            if git show-ref --verify --quiet "refs/heads/$RELEASE"; then
+              git checkout "$RELEASE"
+            else
+              echo "Failed to checkout $RELEASE"
+              exit 1
+            fi
+          fi
+
+      - name: Create feature branch from release (if requested)
+        id: create_feature
+        run: |
+          FEATURE="${{ steps.vars.outputs.FEATURE }}"
+          if [ -z "$FEATURE" ]; then
+            echo "No feature branch requested; done."
+            echo "FEATURE_CREATED=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "Creating feature branch: $FEATURE from current release branch"
+          if git ls-remote --exit-code --heads origin "$FEATURE"; then
+            echo "Remote branch $FEATURE already exists — skipping creation."
+            echo "FEATURE_CREATED=false" >> $GITHUB_OUTPUT
+          else
+            git checkout -b "$FEATURE"
+            git push origin HEAD:"$FEATURE"
+            echo "FEATURE_CREATED=true" >> $GITHUB_OUTPUT
+          fi
+          echo "::set-output name=feature::$FEATURE"
+
+      - name: Result summary
+        run: |
+          echo "Release branch: ${{ steps.vars.outputs.RELEASE }}"
+          echo "Created release branch?: ${{ steps.create_release.outputs.CREATED || 'skipped/existed' }}"
+          echo "Feature branch requested: '${{ steps.vars.outputs.FEATURE }}'"
+          echo "Feature branch created?: ${{ steps.create_feature.outputs.FEATURE_CREATED || 'skipped/existed' }}"
