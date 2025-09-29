@@ -35,8 +35,8 @@ jobs:
 
       - name: Configure git user
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "Sagar-korumilli"
+          git config user.email "sagar.korumilli11@gmail.com"
 
       - name: Fetch remote branches
         run: |
