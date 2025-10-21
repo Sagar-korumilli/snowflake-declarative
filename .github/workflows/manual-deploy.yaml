@@ -1,0 +1,48 @@
+name: Manual Snowflake Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_type:
+        description: 'initial_setup / deploy / rollback'
+        required: true
+        default: 'deploy'
+      files:
+        description: 'Comma-separated files (optional)'
+        required: false
+      schemas:
+        description: 'Comma-separated schemas (optional)'
+        required: false
+      object_types:
+        description: 'Comma-separated object types (views,functions,procedures,tables,all)'
+        required: false
+        default: 'all'
+
+jobs:
+  manual-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python + snow CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install --user snowflake-cli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run deploy tool
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+        run: |
+          python scripts/deploy_tool.py --mode "${{ github.event.inputs.deployment_type }}" \
+            --files "${{ github.event.inputs.files }}" \
+            --schemas "${{ github.event.inputs.schemas }}" \
+            --object-types "${{ github.event.inputs.object_types }}" \
+            --non-interactive
