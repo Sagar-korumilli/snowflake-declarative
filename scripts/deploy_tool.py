@@ -2,14 +2,10 @@
 """
 scripts/deploy_tool.py
 
-Usage:
-  Interactive:
-    python scripts/deploy_tool.py --mode initial_setup --schemas hr
-  Non-interactive:
-    python scripts/deploy_tool.py --mode initial_setup --schemas hr --non-interactive
-    python scripts/deploy_tool.py --mode deploy --files deploy/JIRA123.sql --non-interactive
+Unified deploy tool — supports initial_setup, deploy, rollback.
+Works with both snowsql and snow CLI (detects and uses correct flags).
 
-Env (exact names expected):
+Env vars used (exact names):
   SNOWFLAKE_ACCOUNT
   SNOWFLAKE_USER
   SNOWFLAKE_PRIVATE_KEY
@@ -75,7 +71,7 @@ def write_private_key():
     return Path(tf.name)
 
 def choose_client(preferred=None):
-    # return full path if available
+    # return absolute path if available
     if preferred:
         resolved = shutil.which(preferred) or (preferred if Path(preferred).is_file() and os.access(preferred, os.X_OK) else None)
         if resolved:
@@ -105,8 +101,9 @@ def make_wrapper_sql(original_path: Path, role: str, warehouse: str, database: s
 
 def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfile: Path):
     """
-    Execute a single SQL file. Uses the correct flags for 'snowsql' and 'snow' CLI.
-    For 'snowsql' we pass -o exit_on_error=true. For 'snow' we use --filename and do NOT pass unsupported flags.
+    Execute a single SQL file. Handles snowsql and snow CLI variants:
+      - snowsql   -> use -f <file> and -o exit_on_error=true
+      - snow      -> use `snow sql --filename <file>` and do not pass unsupported flags
     """
     role = os.environ.get("SNOWFLAKE_ROLE")
     warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE")
@@ -119,11 +116,12 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
         if created:
             try: os.remove(wrapper_path)
             except: pass
-        print("ERROR: No Snow client (snowsql or snow) found in PATH. Install one or set --snowsql.", file=sys.stderr)
+        print("ERROR: No Snow client found in PATH (snowsql or snow). Install one or set --snowsql.", file=sys.stderr)
         sys.exit(10)
 
     client_name = Path(client_bin).name.lower()
 
+    # Prefer snowsql behavior for 'snowsql' binary
     if "snowsql" in client_name:
         cmd = [
             client_bin,
@@ -134,21 +132,19 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
             "-f", str(wrapper_path),
             "-o", "exit_on_error=true"
         ]
-    elif client_name == "snow":
-        # snow CLI uses --filename; do not pass --exit-on-error (not supported)
-        # we rely on snow returning non-zero on failures (script will exit on that return code)
+    elif "snow" == client_name or client_name.startswith("snow"):
+        # many snow versions expect `snow sql --filename <file>` (no 'execute')
+        # Use --account/--username/--private-key-path and --filename.
+        # Do NOT pass unsupported flags like --exit-on-error.
         cmd = [
-            client_bin, "sql", "execute",
+            client_bin, "sql",
             "--account", account,
             "--username", user,
             "--private-key-path", str(keypath),
             "--filename", str(wrapper_path)
         ]
-        # optional flags that are supported by snow (uncomment if desired):
-        # cmd += ["--silent"]   # reduce output
-        # cmd += ["--single-transaction"]  # wrap in a transaction if needed
     else:
-        # unknown client; try snowsql-style first (best-effort)
+        # fallback: try snowsql-style first
         cmd = [
             client_bin,
             "-a", account,
@@ -172,6 +168,9 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
             pass
     if proc.returncode != 0:
         print(f"ERROR: execution failed for {sqlfile} (rc={proc.returncode})", file=sys.stderr)
+        # Provide a hint for debugging snow CLI variants
+        if "snow" in client_name:
+            print("Hint: your installed 'snow' CLI may require slightly different flags. Paste the 'Running:' command and the CLI error and I will adapt.", file=sys.stderr)
         sys.exit(proc.returncode)
 
 # ---------- file discovery ----------
