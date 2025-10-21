@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-scripts/deploy_tool.py (updated to use correct flags for 'snow' CLI)
+scripts/deploy_tool.py
 
-Usage examples:
-  python scripts/deploy_tool.py --mode initial_setup --schemas hr --non-interactive
+Usage:
+  Interactive:
+    python scripts/deploy_tool.py --mode initial_setup --schemas hr
+  Non-interactive:
+    python scripts/deploy_tool.py --mode initial_setup --schemas hr --non-interactive
+    python scripts/deploy_tool.py --mode deploy --files deploy/JIRA123.sql --non-interactive
 
-Environment variables used (exact names):
+Env (exact names expected):
   SNOWFLAKE_ACCOUNT
   SNOWFLAKE_USER
   SNOWFLAKE_PRIVATE_KEY
@@ -24,7 +28,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-# ---------- repository root detection ----------
+# ---------- repo root detection ----------
 def find_repo_root():
     cur = Path(__file__).resolve().parent
     for anc in [cur] + list(cur.parents):
@@ -47,6 +51,7 @@ OBJECT_ORDER = [
     "file_formats"
 ]
 
+# ---------- helpers ----------
 def normalize_name(name: str) -> str:
     if not name:
         return ""
@@ -55,14 +60,6 @@ def normalize_name(name: str) -> str:
     n = n.strip('_')
     return n
 
-def ensure_env_vars():
-    account = os.environ.get("SNOWFLAKE_ACCOUNT")
-    user = os.environ.get("SNOWFLAKE_USER")
-    if not account or not user:
-        print("ERROR: SNOWFLAKE_ACCOUNT and SNOWFLAKE_USER must be set.", file=sys.stderr)
-        sys.exit(2)
-    return account, user
-
 def write_private_key():
     key_text = os.environ.get("SNOWFLAKE_PRIVATE_KEY")
     if not key_text:
@@ -70,8 +67,7 @@ def write_private_key():
         sys.exit(2)
     tf = tempfile.NamedTemporaryFile(delete=False, prefix="snowkey_", suffix=".p8", mode="w", encoding="utf-8")
     tf.write(key_text)
-    tf.flush()
-    tf.close()
+    tf.flush(); tf.close()
     try:
         os.chmod(tf.name, 0o600)
     except Exception:
@@ -79,19 +75,11 @@ def write_private_key():
     return Path(tf.name)
 
 def choose_client(preferred=None):
-    """
-    Return the absolute path of preferred if present, else try snowsql, then snow.
-    Returns None if none found.
-    """
-    # If user passed a preferred and it is executable, honor it
+    # return full path if available
     if preferred:
-        if Path(preferred).is_file() and os.access(preferred, os.X_OK):
-            return str(Path(preferred))
-        # try resolving in PATH
-        resolved = shutil.which(preferred)
+        resolved = shutil.which(preferred) or (preferred if Path(preferred).is_file() and os.access(preferred, os.X_OK) else None)
         if resolved:
             return resolved
-    # prefer snowsql, then snow
     for name in ("snowsql", "snow"):
         p = shutil.which(name)
         if p:
@@ -112,14 +100,13 @@ def make_wrapper_sql(original_path: Path, role: str, warehouse: str, database: s
     tf.write("\n".join(header_lines) + "\n\n")
     with open(original_path, "r", encoding="utf-8") as rf:
         tf.write(rf.read())
-    tf.flush()
-    tf.close()
+    tf.flush(); tf.close()
     return Path(tf.name), True
 
 def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfile: Path):
     """
-    Execute a single SQL file using client_bin (absolute path). Uses correct flags for
-    snowsql and snow CLI.
+    Execute a single SQL file. Uses the correct flags for 'snowsql' and 'snow' CLI.
+    For 'snowsql' we pass -o exit_on_error=true. For 'snow' we use --filename and do NOT pass unsupported flags.
     """
     role = os.environ.get("SNOWFLAKE_ROLE")
     warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE")
@@ -137,7 +124,6 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
 
     client_name = Path(client_bin).name.lower()
 
-    # Build command depending on client
     if "snowsql" in client_name:
         cmd = [
             client_bin,
@@ -149,18 +135,20 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
             "-o", "exit_on_error=true"
         ]
     elif client_name == "snow":
-        # The snow CLI expects --filename (not --file). Use --username not -u.
-        # We include --role flag option only if needed; however we inject USE ROLE in wrapper already.
+        # snow CLI uses --filename; do not pass --exit-on-error (not supported)
+        # we rely on snow returning non-zero on failures (script will exit on that return code)
         cmd = [
             client_bin, "sql", "execute",
             "--account", account,
             "--username", user,
             "--private-key-path", str(keypath),
-            "--filename", str(wrapper_path),
-            "--exit-on-error"
+            "--filename", str(wrapper_path)
         ]
+        # optional flags that are supported by snow (uncomment if desired):
+        # cmd += ["--silent"]   # reduce output
+        # cmd += ["--single-transaction"]  # wrap in a transaction if needed
     else:
-        # Unknown client name: attempt snowsql-style, then snow-style fallback
+        # unknown client; try snowsql-style first (best-effort)
         cmd = [
             client_bin,
             "-a", account,
@@ -183,14 +171,10 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
         except Exception:
             pass
     if proc.returncode != 0:
-        # Give a helpful hint if snow client returned unknown option previously
-        if client_name == "snow" and proc.returncode == 2:
-            print("ERROR: snow CLI returned non-zero. If you see an 'No such option' message " 
-                  "it may require different flags (try '--filename' was used).", file=sys.stderr)
         print(f"ERROR: execution failed for {sqlfile} (rc={proc.returncode})", file=sys.stderr)
         sys.exit(proc.returncode)
 
-# ---------- file discovery helpers ----------
+# ---------- file discovery ----------
 def resolve_files_arg(files_arg: str):
     if not files_arg:
         return []
@@ -289,6 +273,7 @@ def find_snowflake_objects(schemas=None, object_types=None):
                             found.append(p)
     return sorted(found, key=lambda p: str(p).lower())
 
+# ---------- interactive picker ----------
 def interactive_pick(files):
     if not files:
         print("No candidate files.")
@@ -314,6 +299,7 @@ def interactive_pick(files):
             pass
     return picks
 
+# ---------- main ----------
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["initial_setup", "deploy", "rollback"])
@@ -338,7 +324,6 @@ def main():
         sys.exit(2)
 
     if not SNOWFLAKE_DIR.exists():
-        # allow explicit files in deploy mode, otherwise warn
         if not (args.mode == "deploy" and args.files):
             print(f"Warning: expected top-level folder not found: {SNOWFLAKE_DIR} (repo root: {REPO_ROOT})", file=sys.stderr)
 
