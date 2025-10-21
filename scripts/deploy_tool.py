@@ -2,17 +2,18 @@
 """
 scripts/deploy_tool.py
 
-Unified deploy tool — supports initial_setup, deploy, rollback.
-Works with both snowsql and snow CLI (detects and uses correct flags).
+Final version: uses the exact supported flags for `snow` (temporary connection + --private-key-file + --filename)
+and keeps snowsql behavior (-f + exit_on_error). Case-insensitive folder matching and repo-root detection included.
 
-Env vars used (exact names):
+Env vars (exact names):
   SNOWFLAKE_ACCOUNT
   SNOWFLAKE_USER
-  SNOWFLAKE_PRIVATE_KEY
+  SNOWFLAKE_PRIVATE_KEY         (PEM text)
   SNOWFLAKE_PRIVATE_KEY_PASSPHRASE (optional)
-  SNOWFLAKE_ROLE (optional)
-  SNOWFLAKE_WAREHOUSE (optional)
-  SNOWFLAKE_DATABASE (optional)
+  SNOWFLAKE_ROLE                (optional)
+  SNOWFLAKE_WAREHOUSE           (optional)
+  SNOWFLAKE_DATABASE            (optional)
+  SNOWFLAKE_SCHEMA              (optional)  # optional extra if you want schema flag
 """
 import os
 import sys
@@ -71,7 +72,7 @@ def write_private_key():
     return Path(tf.name)
 
 def choose_client(preferred=None):
-    # return absolute path if available
+    # return full path if available
     if preferred:
         resolved = shutil.which(preferred) or (preferred if Path(preferred).is_file() and os.access(preferred, os.X_OK) else None)
         if resolved:
@@ -101,50 +102,39 @@ def make_wrapper_sql(original_path: Path, role: str, warehouse: str, database: s
 
 def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfile: Path):
     """
-    Execute a single SQL file. Handles snowsql and snow CLI variants:
-      - snowsql   -> use -f <file> and -o exit_on_error=true
-      - snow      -> use `snow sql --filename <file>` and do not pass unsupported flags
+    Execute a single SQL file using the detected client.
+    - snowsql -> wrapper + -f + -o exit_on_error=true
+    - snow    -> temporary connection (-x) + --private-key-file + --filename (no unsupported flags)
+               -> pass optional --role/--warehouse/--database/--schema flags if present
     """
     role = os.environ.get("SNOWFLAKE_ROLE")
     warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE")
     database = os.environ.get("SNOWFLAKE_DATABASE")
+    schema = os.environ.get("SNOWFLAKE_SCHEMA")
     passphrase = os.environ.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
 
-    wrapper_path, created = make_wrapper_sql(sqlfile, role, warehouse, database)
-
     if not client_bin:
-        if created:
-            try: os.remove(wrapper_path)
-            except: pass
         print("ERROR: No Snow client found in PATH (snowsql or snow). Install one or set --snowsql.", file=sys.stderr)
         sys.exit(10)
 
     client_name = Path(client_bin).name.lower()
 
-    # Prefer snowsql behavior for 'snowsql' binary
-    if "snowsql" in client_name:
-        cmd = [
-            client_bin,
-            "-a", account,
-            "-u", user,
-            "--authenticator", "SNOWFLAKE_JWT",
-            "--private-key-path", str(keypath),
-            "-f", str(wrapper_path),
-            "-o", "exit_on_error=true"
-        ]
-    elif "snow" == client_name or client_name.startswith("snow"):
-        # many snow versions expect `snow sql --filename <file>` (no 'execute')
-        # Use --account/--username/--private-key-path and --filename.
-        # Do NOT pass unsupported flags like --exit-on-error.
-        cmd = [
-            client_bin, "sql",
-            "--account", account,
-            "--username", user,
-            "--private-key-path", str(keypath),
-            "--filename", str(wrapper_path)
-        ]
+    # SNOW CLI path: use connection flags directly (no wrapper)
+    if "snow" == client_name or client_name.startswith("snow"):
+        # Build the snow command using temporary connection (-x) and supported flags
+        cmd = [client_bin, "sql", "-x", "--account", account, "--username", user, "--private-key-file", str(keypath), "--filename", str(sqlfile)]
+        # append optional connection override flags if present (supported by the snow CLI)
+        if role:
+            cmd += ["--role", role]
+        if warehouse:
+            cmd += ["--warehouse", warehouse]
+        if database:
+            cmd += ["--database", database]
+        if schema:
+            cmd += ["--schema", schema]
     else:
-        # fallback: try snowsql-style first
+        # default to snowsql behavior: create wrapper that injects USE statements then run -f
+        wrapper_path, created = make_wrapper_sql(sqlfile, role, warehouse, database)
         cmd = [
             client_bin,
             "-a", account,
@@ -154,6 +144,8 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
             "-f", str(wrapper_path),
             "-o", "exit_on_error=true"
         ]
+        # we will clean wrapper after running
+        # run and cleanup handled below
 
     print("Running:", " ".join(shlex.quote(c) for c in cmd))
     env = os.environ.copy()
@@ -161,19 +153,23 @@ def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfil
         env["PRIVATE_KEY_PASSPHRASE"] = passphrase
 
     proc = subprocess.run(cmd, env=env)
-    if created:
+
+    # cleanup wrapper if created (only for snowsql branch)
+    if not (("snow" == client_name or client_name.startswith("snow"))):
         try:
-            os.remove(wrapper_path)
+            if wrapper_path and wrapper_path.exists():
+                wrapper_path.unlink()
         except Exception:
             pass
+
     if proc.returncode != 0:
         print(f"ERROR: execution failed for {sqlfile} (rc={proc.returncode})", file=sys.stderr)
-        # Provide a hint for debugging snow CLI variants
+        # helpful hint for snow CLI debugging
         if "snow" in client_name:
-            print("Hint: your installed 'snow' CLI may require slightly different flags. Paste the 'Running:' command and the CLI error and I will adapt.", file=sys.stderr)
+            print("Hint: 'snow' failed. If you see 'Connection default is not configured' make sure -x is present (we use it).", file=sys.stderr)
         sys.exit(proc.returncode)
 
-# ---------- file discovery ----------
+# ---------- file discovery helpers (unchanged) ----------
 def resolve_files_arg(files_arg: str):
     if not files_arg:
         return []
