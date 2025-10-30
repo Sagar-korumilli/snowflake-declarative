@@ -1,1 +1,1 @@
-Alter table DEVOPS.HR.EMPLOYEES add column name4 varchar(20);
+Alter table DEVOPS.HR.EMPLOYEES add column name5 varchar(20);
