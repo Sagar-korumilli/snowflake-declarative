@@ -2,22 +2,14 @@
 """
 scripts/ddl_sync.py
 
-Behavior:
- - By default (no --execute) the script will NOT execute SQL files; it only scans them for ALTER statements
-   and then calls GET_DDL to refresh files under snowflake/.
- - If you pass --execute, it will first execute the SQL statements (same as before), then refresh DDL.
- - Accepts both db.schema.object and schema.object and unqualified object names (with optional SNOWFLAKE_SCHEMA env).
- - No backup copies (overwrites target files). Commits per-file using GIT_PUSH_TOKEN.
+Executes SQL files (deploy/rollback), searches for ALTER statements,
+fetches current DDL from Snowflake using GET_DDL and overwrites the
+corresponding file under snowflake/ (no backup copies). Commits & pushes
+changes using GIT_PUSH_TOKEN.
 
-Usage examples:
-  # default: only parse and refresh DDL (safe after your deploy step)
-  python scripts/ddl_sync.py --inputs "deploy/5678-project2.sql" --snowflake-root snowflake
-
-  # execute the SQL file(s) first, then refresh
-  python scripts/ddl_sync.py --inputs "deploy/5678-project2.sql" --snowflake-root snowflake --execute
-
-  # dry run
-  python scripts/ddl_sync.py --inputs "deploy/" --snowflake-root snowflake --dry-run
+Usage:
+  python scripts/ddl_sync.py --inputs "deploy/1234.sql,rollback/x.sql" --snowflake-root snowflake
+  python scripts/ddl_sync.py --inputs deploy/ --snowflake-root snowflake --dry-run
 """
 import argparse
 import os
@@ -86,7 +78,7 @@ def normalize_name(name: str) -> str:
 def configure_git_credentials():
     name = os.getenv('GIT_USER_NAME', 'DDL Sync Bot')
     email = os.getenv('GIT_USER_EMAIL', 'ddl-sync@noreply.github.com')
-    token = os.getenv('GIT_PUSH_TOKEN')  # expected token name
+    token = os.getenv('GIT_PUSH_TOKEN')  # we only expect this token name
 
     if not token:
         raise RuntimeError("❌ No authentication token found. Set GIT_PUSH_TOKEN")
@@ -181,21 +173,23 @@ def strip_identifier(token: str) -> str:
 def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str], Optional[str], str]]:
     """
     Return list of tuples: (OBJECT_TYPE, opt_db, opt_schema, OBJECT_NAME)
-    Accepts:
-      - db.schema.object
-      - schema.object
-      - object
-    Handles quoted identifiers.
+    Handles identifiers optionally quoted using " or `, and 1/2/3-part names.
     """
     results = []
+    # Find targets after ALTER <TYPE> (grab the token chunk following)
     matches = re.findall(r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+([^;,\n]+)', sql_content, flags=re.IGNORECASE)
     for obj_type, target in matches:
+        # target may include additional SQL (like ADD COLUMN ...). We only want the object name chunk at start.
+        # Take first token-like chunk up to whitespace or '('
         target = target.strip()
+        # cut off at whitespace that follows the object identifier(s)
         m = re.match(r'([A-Za-z0-9_"`\.]+)', target)
         if not m:
+            # fallback: skip this match
             continue
         id_chunk = m.group(1)
         parts = [strip_identifier(p) for p in id_chunk.split(".")]
+        # remove any empty parts
         parts = [p for p in parts if p]
         if len(parts) == 3:
             db_name, schema_name, obj_name = parts
@@ -207,6 +201,7 @@ def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str],
             obj_name = parts[0]
             results.append((obj_type.upper(), None, None, obj_name))
         else:
+            # unexpected: take last two as schema.object
             schema_name, obj_name = parts[-2], parts[-1]
             results.append((obj_type.upper(), None, schema_name, obj_name))
     return results
@@ -259,7 +254,9 @@ def get_current_ddl_with_fallback(conn: snowflake.connector.SnowflakeConnection,
     candidates = build_quoted_fullname_candidates(env_db, parsed_db, parsed_schema, obj_name)
     last_err = None
     for cname in candidates:
-        sql = f"SELECT GET_DDL('{obj_type}', '{cname.replace(\"'\",\"''\")}', TRUE)"
+        # compute escaped string **outside** the f-string to avoid nested-quote issues
+        escaped_cname = cname.replace("'", "''")
+        sql = f"SELECT GET_DDL('{obj_type}', '{escaped_cname}', TRUE)"
         try:
             with conn.cursor() as cur:
                 logger.info(f"➡️ Trying GET_DDL for {obj_type} using identifier: {cname}")
