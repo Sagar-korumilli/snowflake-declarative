@@ -2,14 +2,16 @@
 """
 scripts/ddl_sync.py
 
-Executes SQL files (deploy/rollback), searches for ALTER statements,
+Executes SQL files (deploy/rollback) or parses them for ALTER statements,
 fetches current DDL from Snowflake using GET_DDL and overwrites the
 corresponding file under snowflake/ (no backup copies). Commits & pushes
 changes using GIT_PUSH_TOKEN.
 
-Usage:
-  python scripts/ddl_sync.py --inputs "deploy/1234.sql,rollback/x.sql" --snowflake-root snowflake
-  python scripts/ddl_sync.py --inputs deploy/ --snowflake-root snowflake --dry-run
+Defaults to parse-only (won't execute SQL). Use --execute to run SQL first.
+
+Main improvement over previous: object file resolution now searches *inside*
+schema subfolders (e.g. snowflake/hr/Tables) and creates new files inside
+the appropriate subfolder when needed.
 """
 import argparse
 import os
@@ -76,36 +78,32 @@ def normalize_name(name: str) -> str:
     return n.strip('_')
 
 def configure_git_credentials():
-    name = os.getenv('GIT_USER_NAME', 'DDL Sync Bot')
-    email = os.getenv('GIT_USER_EMAIL', 'ddl-sync@noreply.github.com')
-    token = os.getenv('GIT_PUSH_TOKEN')  # we only expect this token name
-
+    token = os.getenv('GIT_PUSH_TOKEN')
     if not token:
         raise RuntimeError("❌ No authentication token found. Set GIT_PUSH_TOKEN")
 
-    try:
-        subprocess.run(["git", "config", "--local", "user.name", name], check=True)
-        subprocess.run(["git", "config", "--local", "user.email", email], check=True)
-
-        repo = os.getenv('GITHUB_REPOSITORY')
-        if repo:
-            auth_url = f"https://{token}@github.com/{repo}.git"
-        else:
+    repo_env = os.getenv('GITHUB_REPOSITORY')
+    if repo_env:
+        owner_repo = repo_env
+    else:
+        try:
             url = subprocess.check_output(["git", "config", "--get", "remote.origin.url"], text=True).strip()
-            if 'github.com' in url:
-                if url.startswith('https://'):
-                    if '@github.com' in url:
-                        url = re.sub(r'https://[^@]+@github.com/', 'https://github.com/', url)
-                    auth_url = url.replace('https://github.com/', f'https://{token}@github.com/')
-                else:
-                    repo_path = url.split(':',1)[1].replace('.git','')
-                    auth_url = f"https://{token}@github.com/{repo_path}.git"
+            if url.startswith("git@github.com:"):
+                owner_repo = url.split(":", 1)[1].replace(".git", "")
+            elif "github.com" in url:
+                owner_repo = url.split("github.com/")[-1].replace(".git", "")
             else:
-                raise RuntimeError(f"❌ Unsupported git remote: {url}")
+                raise RuntimeError(f"Unsupported remote: {url}")
+        except Exception as e:
+            raise RuntimeError(f"❌ Could not determine repo location for remote origin: {e}")
+
+    auth_url = f"https://{token}@github.com/{owner_repo}.git"
+    try:
         subprocess.run(["git", "remote", "set-url", "origin", auth_url], check=True)
-        logger.info("🔑 Git remote configured with authentication")
+        os.environ["GIT_TERMINAL_PROMPT"] = "0"
+        logger.info("🔑 Git remote configured with authentication (token-based)")
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"❌ Failed to configure Git credentials: {e}")
+        raise RuntimeError(f"❌ Failed to set git remote URL: {e}")
 
 def has_changes_to_commit(file_path: Path) -> bool:
     try:
@@ -113,6 +111,13 @@ def has_changes_to_commit(file_path: Path) -> bool:
         return bool(result.stdout.strip())
     except subprocess.CalledProcessError:
         return False
+
+def current_branch() -> str:
+    try:
+        b = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+        return b
+    except Exception:
+        return "HEAD"
 
 def git_add_commit_push(file_path: Path, message: str, dry_run: bool = False):
     if dry_run:
@@ -124,38 +129,140 @@ def git_add_commit_push(file_path: Path, message: str, dry_run: bool = False):
         return
 
     try:
+        git_user = os.getenv('GIT_USER_NAME', None)
+        git_email = os.getenv('GIT_USER_EMAIL', None)
+        if git_user:
+            subprocess.run(["git", "config", "--local", "user.name", git_user], check=True)
+        if git_email:
+            subprocess.run(["git", "config", "--local", "user.email", git_email], check=True)
+
         configure_git_credentials()
+
         subprocess.run(["git", "add", str(file_path)], check=True)
-        result = subprocess.run(["git", "diff", "--cached", "--exit-code"], capture_output=True)
-        if result.returncode == 0:
-            logger.info(f"ℹ️ No staged changes for {file_path.name}")
+        diff = subprocess.run(["git", "diff", "--cached", "--name-only"], capture_output=True, text=True)
+        if not diff.stdout.strip():
+            logger.info(f"ℹ️ Nothing staged to commit for {file_path.name}")
             return
         subprocess.run(["git", "commit", "-m", message], check=True)
-        subprocess.run(["git", "push"], check=True)
-        logger.info(f"✅ Successfully pushed updated DDL for {file_path.name}")
+        branch = current_branch()
+        subprocess.run(["git", "push", "origin", f"HEAD:{branch}"], check=True)
+        logger.info(f"✅ Successfully pushed updated DDL for {file_path.name} to {branch}")
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Git operation failed for {file_path.name}: {e}")
 
-# ---------- find file to update ----------
+# ---------- object-type -> folder mapping ----------
+OBJECT_TYPE_FOLDERS = {
+    "TABLE": ["tables"],
+    "VIEW": ["views"],
+    "FUNCTION": ["functions"],
+    "PROCEDURE": ["stored_procedures", "procedures", "stored-procedures", "storedprocedures"],
+    "STORED_PROCEDURE": ["stored_procedures", "procedures"],
+    "SEQUENCE": ["sequences"],
+    "FILE_FORMAT": ["file_formats", "file-formats"],
+    "STREAM": ["streams"],
+    "TASK": ["tasks"],
+    # fallback generic
+    "DEFAULT": ["tables", "views", "functions", "stored_procedures"]
+}
+
+# ---------- find file to update (searches inside type subfolders first) ----------
 def find_object_file(schema_path: Path, object_name: str, object_type: str) -> Path:
+    """
+    Search order:
+      1. preferred type subfolders under schema (case-insensitive), exact & improved heuristics
+      2. entire schema folder (all subfolders)
+      3. fallback: create new file inside preferred type subfolder (create it if necessary)
+    """
     object_name_lower = object_name.lower()
-    candidates = []
-    candidates += list(schema_path.glob(f"*__{object_name_lower}_table.sql"))
-    candidates += list(schema_path.glob(f"*__{object_name_lower}_{object_type.lower()}.sql"))
-    if not candidates:
-        candidates += list(schema_path.glob(f"*__{object_name_lower}.sql"))
-    if not candidates:
-        candidates += [f for f in schema_path.glob(f"*{object_name_lower}*.sql") if re.search(rf"__{object_name_lower}([_.]|$)", f.name)]
-    if not candidates:
-        candidates += list(schema_path.glob(f"*{object_name_lower}*.sql"))
-    if candidates:
-        chosen = sorted(candidates, key=lambda p: len(p.name))[0]
-        logger.info(f"✅ Will update DDL file: {chosen}")
-        return chosen
-    else:
-        new_file = schema_path / f"{object_type.lower()}__{object_name_lower}.sql"
-        logger.info(f"ℹ️ Will create new file: {new_file}")
-        return new_file
+    object_type_key = object_type.upper()
+    # choose candidate folders
+    preferred_folders = OBJECT_TYPE_FOLDERS.get(object_type_key, OBJECT_TYPE_FOLDERS["DEFAULT"])
+
+    # helper to search a directory's files with heuristics
+    def search_files_in(dir_path: Path) -> Optional[Path]:
+        files = [p for p in dir_path.rglob("*.sql")]
+        # priority A: exact canonical names
+        exact_candidates = []
+        for p in files:
+            n = p.name.lower()
+            if n == f"{object_name_lower}_table.sql" or n == f"{object_name_lower}.sql" or n == f"{object_name_lower}_tbl.sql":
+                exact_candidates.append(p)
+        if exact_candidates:
+            return sorted(exact_candidates, key=lambda p: len(p.name))[0]
+        # priority B: contains object name and type token
+        token = "table" if object_type_key == "TABLE" else object_type_key.lower()
+        contains_candidates = []
+        for p in files:
+            n = p.name.lower()
+            if object_name_lower in n and (token in n or f"_{token}" in n or f"-{token}" in n):
+                contains_candidates.append(p)
+        if contains_candidates:
+            return sorted(contains_candidates, key=lambda p: len(p.name))[0]
+        # priority C: fuzzy filename containing object name
+        fuzzy = [p for p in files if object_name_lower in p.name.lower()]
+        if fuzzy:
+            return sorted(fuzzy, key=lambda p: len(p.name))[0]
+        # priority D: previous __ patterns
+        candidates = [p for p in files if re.search(rf"__{re.escape(object_name_lower)}(_|\.|-|$)", p.name.lower())]
+        if candidates:
+            return sorted(candidates, key=lambda p: len(p.name))[0]
+        return None
+
+    # 1) Try preferred subfolders (case-insensitive)
+    for pref in preferred_folders:
+        # find matching folder names under schema_path
+        matched = None
+        for child in [c for c in schema_path.iterdir() if c.is_dir()]:
+            if normalize_name(child.name) == normalize_name(pref) or pref.lower() in child.name.lower():
+                matched = child
+                break
+        if matched:
+            found = search_files_in(matched)
+            if found:
+                logger.info(f"✅ Found file in preferred folder '{matched}': {found}")
+                return found
+
+    # 2) Try any subfolder under schema_path (search all)
+    found_any = None
+    for child in [c for c in schema_path.iterdir() if c.is_dir()]:
+        found = search_files_in(child)
+        if found:
+            # pick the best (shortest name) among candidates encountered
+            if not found_any or len(found.name) < len(found_any.name):
+                found_any = found
+    if found_any:
+        logger.info(f"✅ Found file in schema subfolders: {found_any}")
+        return found_any
+
+    # 3) Try searching directly under schema_path (top-level SQL files)
+    found_top = search_files_in(schema_path)
+    if found_top:
+        logger.info(f"✅ Found file in schema root: {found_top}")
+        return found_top
+
+    # 4) Fallback: create new file inside preferred folder (first preferred if exists, else create first preferred)
+    chosen_folder = None
+    for pref in preferred_folders:
+        for child in [c for c in schema_path.iterdir() if c.is_dir()]:
+            if normalize_name(child.name) == normalize_name(pref) or pref.lower() in child.name.lower():
+                chosen_folder = child
+                break
+        if chosen_folder:
+            break
+    if not chosen_folder:
+        # create first preferred folder under schema_path
+        chosen_folder = schema_path / preferred_folders[0]
+        try:
+            chosen_folder.mkdir(parents=True, exist_ok=True)
+            logger.info(f"ℹ️ Created folder for object type under schema: {chosen_folder}")
+        except Exception:
+            # fallback to schema root
+            chosen_folder = schema_path
+
+    token = object_type.lower() if object_type else "table"
+    new_file = chosen_folder / f"{token}__{object_name_lower}.sql"
+    logger.info(f"ℹ️ Will create new file: {new_file}")
+    return new_file
 
 # ---------- SQL parsing helpers ----------
 def split_sql_statements(sql_text: str) -> List[str]:
@@ -171,25 +278,15 @@ def strip_identifier(token: str) -> str:
     return token
 
 def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str], Optional[str], str]]:
-    """
-    Return list of tuples: (OBJECT_TYPE, opt_db, opt_schema, OBJECT_NAME)
-    Handles identifiers optionally quoted using " or `, and 1/2/3-part names.
-    """
     results = []
-    # Find targets after ALTER <TYPE> (grab the token chunk following)
     matches = re.findall(r'ALTER\s+(TABLE|VIEW|FUNCTION|PROCEDURE|STAGE|STREAM|TASK|SEQUENCE)\s+([^;,\n]+)', sql_content, flags=re.IGNORECASE)
     for obj_type, target in matches:
-        # target may include additional SQL (like ADD COLUMN ...). We only want the object name chunk at start.
-        # Take first token-like chunk up to whitespace or '('
         target = target.strip()
-        # cut off at whitespace that follows the object identifier(s)
         m = re.match(r'([A-Za-z0-9_"`\.]+)', target)
         if not m:
-            # fallback: skip this match
             continue
         id_chunk = m.group(1)
         parts = [strip_identifier(p) for p in id_chunk.split(".")]
-        # remove any empty parts
         parts = [p for p in parts if p]
         if len(parts) == 3:
             db_name, schema_name, obj_name = parts
@@ -201,7 +298,6 @@ def extract_alter_statements(sql_content: str) -> List[Tuple[str, Optional[str],
             obj_name = parts[0]
             results.append((obj_type.upper(), None, None, obj_name))
         else:
-            # unexpected: take last two as schema.object
             schema_name, obj_name = parts[-2], parts[-1]
             results.append((obj_type.upper(), None, schema_name, obj_name))
     return results
@@ -217,28 +313,19 @@ def build_quoted_fullname_candidates(db_env: Optional[str], parsed_db: Optional[
     env_db = db_env
     env_schema = os.getenv("SNOWFLAKE_SCHEMA")
     candidates = []
-
     def q(*parts):
         return ".".join(quote_ident(p) for p in parts if p is not None)
-
-    # 1) parsed db + schema + obj
     if parsed_db and parsed_schema:
         candidates.append(q(parsed_db, parsed_schema, obj_name))
-    # 2) parsed schema + obj with env db
     if parsed_schema and env_db:
         candidates.append(q(env_db, parsed_schema, obj_name))
-    # 3) parsed_db + env_schema + obj (unlikely but try)
     if parsed_db and env_schema:
         candidates.append(q(parsed_db, env_schema, obj_name))
-    # 4) env_db + env_schema + obj (when ALTER used unqualified name)
     if env_db and env_schema:
         candidates.append(q(env_db, env_schema, obj_name))
-    # 5) schema.obj (without db) if parsed_schema present
     if parsed_schema:
         candidates.append(q(parsed_schema, obj_name))
-    # 6) just object
     candidates.append(q(obj_name))
-    # unique preserve order
     seen = set(); uniq = []
     for c in candidates:
         if c not in seen:
@@ -254,7 +341,6 @@ def get_current_ddl_with_fallback(conn: snowflake.connector.SnowflakeConnection,
     candidates = build_quoted_fullname_candidates(env_db, parsed_db, parsed_schema, obj_name)
     last_err = None
     for cname in candidates:
-        # compute escaped string **outside** the f-string to avoid nested-quote issues
         escaped_cname = cname.replace("'", "''")
         sql = f"SELECT GET_DDL('{obj_type}', '{escaped_cname}', TRUE)"
         try:
@@ -306,7 +392,7 @@ def gather_input_files(inputs: List[str]) -> List[Path]:
     unique = sorted(list(dict.fromkeys(files)), key=lambda p: str(p).lower())
     return unique
 
-# ---------- execute file and update corresponding DDLs (NO BACKUPS) ----------
+# ---------- execute file and update corresponding DDLs ----------
 def process_sql_file(file_path: Path, conn: snowflake.connector.SnowflakeConnection,
                      snowflake_root: Path, dry_run: bool = False, execute: bool = False):
     logger.info(f"▶ Processing SQL file: {file_path} (execute={execute})")
@@ -343,7 +429,6 @@ def process_sql_file(file_path: Path, conn: snowflake.connector.SnowflakeConnect
     logger.info(f"🔍 Detected {len(alters)} ALTER targets in {file_path.name}")
 
     for obj_type, parsed_db, parsed_schema, obj_name in alters:
-        # if parsed_schema missing, try SNOWFLAKE_SCHEMA env
         schema_to_use = parsed_schema or os.getenv('SNOWFLAKE_SCHEMA')
         if not schema_to_use:
             logger.warning(f"⚠️ ALTER target {obj_name} has no schema qualifier and SNOWFLAKE_SCHEMA not set; skipping.")
@@ -354,6 +439,7 @@ def process_sql_file(file_path: Path, conn: snowflake.connector.SnowflakeConnect
             logger.warning(f"⚠️ Could not retrieve DDL for {obj_type} {parsed_db or ''}.{parsed_schema or ''}.{obj_name}; skipping file update.")
             continue
 
+        # locate schema folder under snowflake_root
         schema_name_to_find = parsed_schema or os.getenv('SNOWFLAKE_SCHEMA')
         schema_folder = None
         for cand in sorted(snowflake_root.iterdir(), key=lambda p: p.name.lower()):
@@ -370,6 +456,7 @@ def process_sql_file(file_path: Path, conn: snowflake.connector.SnowflakeConnect
             logger.warning(f"⚠️ Schema folder for {schema_name_to_find} not found under {snowflake_root}; skipping update for {obj_name}")
             continue
 
+        # find or create object file (now searches in subfolders like Tables)
         target_file = find_object_file(schema_folder, obj_name, obj_type)
         if dry_run:
             logger.info(f"🔍 [DRY RUN] Would update {target_file} with DDL for {obj_name}")
