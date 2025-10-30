@@ -2,18 +2,11 @@
 """
 scripts/deploy_tool.py
 
-Updated: adds --authenticator SNOWFLAKE_JWT for `snow` CLI when using private-key auth.
-Supports initial_setup, deploy, rollback. Case-insensitive discovery and repo-root detection included.
-
-Env vars (exact names):
-  SNOWFLAKE_ACCOUNT
-  SNOWFLAKE_USER
-  SNOWFLAKE_PRIVATE_KEY         (PEM text)
-  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE (optional)
-  SNOWFLAKE_ROLE                (optional)
-  SNOWFLAKE_WAREHOUSE           (optional)
-  SNOWFLAKE_DATABASE            (optional)
-  SNOWFLAKE_SCHEMA              (optional)
+Updated:
+- case-insensitive file resolution for --files
+- schema token normalization for --schemas (accepts 'salaries' or 'snowflake/salaries' etc.)
+- masked 'Running:' prints to avoid leaking secrets in CI logs
+- retains snow/snowsql compatibility and private-key handling
 """
 import os
 import sys
@@ -100,109 +93,99 @@ def make_wrapper_sql(original_path: Path, role: str, warehouse: str, database: s
     tf.flush(); tf.close()
     return Path(tf.name), True
 
-def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfile: Path):
+# ---------------- masked printing helper ----------------
+def masked_cmd_str(cmd):
     """
-    Execute a single SQL file using the detected client.
-    - snowsql -> wrapper + -f + -o exit_on_error=true
-    - snow    -> temporary connection (-x) + --authenticator SNOWFLAKE_JWT + --private-key-file + --filename
-               -> pass optional --role/--warehouse/--database/--schema flags if present
+    Return a shell-command string where sensitive next-argument tokens
+    are replaced with <REDACTED>. Also masks env values if present.
     """
-    role = os.environ.get("SNOWFLAKE_ROLE")
-    warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE")
-    database = os.environ.get("SNOWFLAKE_DATABASE")
-    schema = os.environ.get("SNOWFLAKE_SCHEMA")
-    passphrase = os.environ.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
+    mask_next = {
+        "--private-key-file", "--private-key-path", "--private-key", "--private-key-file",
+        "--account", "--username", "--user", "--role", "--warehouse", "--database",
+        "-u", "-a"
+    }
+    out = []
+    i = 0
+    while i < len(cmd):
+        tok = cmd[i]
+        if tok in mask_next and i + 1 < len(cmd):
+            out.append(tok)
+            out.append("<REDACTED>")
+            i += 2
+            continue
+        replaced = tok
+        # defensive mask if env values appear as tokens
+        for envk in ("SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_ROLE", "SNOWFLAKE_WAREHOUSE", "SNOWFLAKE_DATABASE"):
+            v = os.environ.get(envk)
+            if v and tok == v:
+                replaced = "<REDACTED>"
+                break
+        out.append(replaced)
+        i += 1
+    return " ".join(shlex.quote(x) for x in out)
 
-    if not client_bin:
-        print("ERROR: No Snow client found in PATH (snowsql or snow). Install one or set --snowsql.", file=sys.stderr)
-        sys.exit(10)
-
-    client_name = Path(client_bin).name.lower()
-
-    # SNOW CLI path: use connection flags directly (no wrapper)
-    if "snow" == client_name or client_name.startswith("snow"):
-        # Build the snow command using temporary connection (-x) and supported flags
-        cmd = [
-            client_bin, "sql", "-x",
-            "--account", account,
-            "--username", user,
-            "--authenticator", "SNOWFLAKE_JWT",          # required for private-key auth
-            "--private-key-file", str(keypath),
-            "--filename", str(sqlfile),
-        ]
-        # append optional connection override flags if present (supported by the snow CLI)
-        if role:
-            cmd += ["--role", role]
-        if warehouse:
-            cmd += ["--warehouse", warehouse]
-        if database:
-            cmd += ["--database", database]
-        if schema:
-            cmd += ["--schema", schema]
-        # don't pass exit-on-error because older/newer snow variants don't support it
-    else:
-        # default to snowsql behavior: create wrapper that injects USE statements then run -f
-        wrapper_path, created = make_wrapper_sql(sqlfile, role, warehouse, database)
-        cmd = [
-            client_bin,
-            "-a", account,
-            "-u", user,
-            "--authenticator", "SNOWFLAKE_JWT",
-            "--private-key-path", str(keypath),
-            "-f", str(wrapper_path),
-            "-o", "exit_on_error=true"
-        ]
-
-    print("Running:", " ".join(shlex.quote(c) for c in cmd))
-    env = os.environ.copy()
-    if passphrase:
-        env["PRIVATE_KEY_PASSPHRASE"] = passphrase
-
-    proc = subprocess.run(cmd, env=env)
-
-    # cleanup wrapper if created (snowsql branch)
-    if not (("snow" == client_name or client_name.startswith("snow"))):
-        try:
-            if wrapper_path and wrapper_path.exists():
-                wrapper_path.unlink()
-        except Exception:
-            pass
-
-    if proc.returncode != 0:
-        print(f"ERROR: execution failed for {sqlfile} (rc={proc.returncode})", file=sys.stderr)
-        if "snow" in client_name:
-            print("Hint: 'snow' failed. If you still see problems, paste the 'Running:' line and the full CLI error here and I'll adapt.", file=sys.stderr)
-        sys.exit(proc.returncode)
-
-# ---------- file discovery helpers ----------
+# ---------- file discovery helpers (case-insensitive resolve_files_arg) ----------
 def resolve_files_arg(files_arg: str):
+    """
+    Resolve user-supplied comma-separated file list to Path objects (repo-relative or absolute),
+    with case-insensitive matching fallback.
+    """
     if not files_arg:
         return []
     out = []
+
+    # build a map of repo-relative lowercased paths -> actual Path
+    repo_files_map = {}
+    for p in sorted(REPO_ROOT.rglob("*")):
+        if p.is_file():
+            try:
+                rel = str(p.relative_to(REPO_ROOT)).replace("\\", "/")
+            except Exception:
+                rel = str(p)
+            repo_files_map[rel.lower()] = p
+
     for raw in [x.strip() for x in files_arg.split(",") if x.strip()]:
         p = Path(raw)
-        if not p.is_absolute():
-            cand = (REPO_ROOT / raw).resolve()
+        resolved_path = None
+
+        # 1) exact absolute path
+        if p.is_absolute() and p.exists():
+            resolved_path = p.resolve()
+        else:
+            # 2) check REPO_ROOT / raw (case-sensitive)
+            cand = (REPO_ROOT / raw)
             if cand.exists():
-                p = cand
+                resolved_path = cand.resolve()
+
+        if resolved_path is None:
+            # 3) try case-insensitive match against repo-relative paths
+            norm = str(raw).replace("\\", "/").lstrip("./").lower()
+            if norm in repo_files_map:
+                resolved_path = repo_files_map[norm]
+
+        if resolved_path is None:
+            # 4) match by filename only (case-insensitive)
+            basename = Path(raw).name.lower()
+            matches = [p for rel, p in repo_files_map.items() if Path(rel).name.lower() == basename]
+            if len(matches) == 1:
+                resolved_path = matches[0]
+            elif len(matches) > 1:
+                matches = sorted(matches, key=lambda x: str(x).lower())
+                resolved_path = matches[0]
+
+        if resolved_path is None:
+            # helpful error showing partial matches
+            partial_matches = [p for rel, p in repo_files_map.items() if norm in rel]
+            sample = "\n".join("  " + str(p) for p in (partial_matches[:10] if partial_matches else []))
+            print(f"ERROR: file {raw} not found.", file=sys.stderr)
+            if sample:
+                print("Partial matches (similar paths) found:", file=sys.stderr)
+                print(sample, file=sys.stderr)
             else:
-                cand2 = DEPLOY_DIR / raw
-                cand3 = SNOWFLAKE_DIR / raw
-                if cand2.exists():
-                    p = cand2
-                elif cand3.exists():
-                    p = cand3
-                else:
-                    matches = list((REPO_ROOT).glob(raw))
-                    if matches:
-                        p = matches[0]
-                    else:
-                        print(f"ERROR: file {raw} not found.", file=sys.stderr)
-                        sys.exit(3)
-        if not p.exists():
-            print(f"ERROR: resolved path {p} does not exist.", file=sys.stderr)
+                print(f"No similar files found under repo root {REPO_ROOT}", file=sys.stderr)
             sys.exit(3)
-        out.append(p)
+
+        out.append(resolved_path.resolve())
     return out
 
 def find_jira_files():
@@ -299,6 +282,108 @@ def interactive_pick(files):
             pass
     return picks
 
+# ---------- schema input normalization helper ----------
+def normalize_schema_tokens(raw_schema_arg: str):
+    """
+    Accept a comma-separated string of schemas or schema paths.
+    Returns a list of schema folder names (basename), or None if no input.
+    """
+    if not raw_schema_arg:
+        return None
+    out = []
+    for token in [t.strip() for t in raw_schema_arg.split(",") if t.strip()]:
+        p = Path(token)
+        if p.exists():
+            try:
+                rel = p.resolve().relative_to(SNOWFLAKE_DIR.resolve())
+                if len(rel.parts) >= 1:
+                    out.append(rel.parts[0])
+                    continue
+            except Exception:
+                out.append(p.name)
+                continue
+        if "/" in token or "\\" in token:
+            out.append(Path(token).name)
+        else:
+            out.append(token)
+    return out or None
+
+# ---------- core execution (unchanged snow/snowsql logic except masked prints) ----------
+def run_sql_file(client_bin: str, account: str, user: str, keypath: Path, sqlfile: Path):
+    """
+    Execute a single SQL file using the detected client.
+    - snowsql -> wrapper + -f + -o exit_on_error=true
+    - snow    -> temporary connection (-x) + --authenticator SNOWFLAKE_JWT + --private-key-file + --filename
+    """
+    role = os.environ.get("SNOWFLAKE_ROLE")
+    warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE")
+    database = os.environ.get("SNOWFLAKE_DATABASE")
+    schema = os.environ.get("SNOWFLAKE_SCHEMA")
+    passphrase = os.environ.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
+
+    if not client_bin:
+        print("ERROR: No Snow client found in PATH (snowsql or snow). Install one or set --snowsql.", file=sys.stderr)
+        sys.exit(10)
+
+    client_name = Path(client_bin).name.lower()
+
+    # SNOW CLI path: use connection flags directly (no wrapper)
+    if "snow" == client_name or client_name.startswith("snow"):
+        cmd = [
+            client_bin, "sql", "-x",
+            "--account", account,
+            "--username", user,
+            "--authenticator", "SNOWFLAKE_JWT",
+            "--private-key-file", str(keypath),
+            "--filename", str(sqlfile),
+        ]
+        if role:
+            cmd += ["--role", role]
+        if warehouse:
+            cmd += ["--warehouse", warehouse]
+        if database:
+            cmd += ["--database", database]
+        if schema:
+            cmd += ["--schema", schema]
+    else:
+        wrapper_path, created = make_wrapper_sql(sqlfile, role, warehouse, database)
+        cmd = [
+            client_bin,
+            "-a", account,
+            "-u", user,
+            "--authenticator", "SNOWFLAKE_JWT",
+            "--private-key-path", str(keypath),
+            "-f", str(wrapper_path),
+            "-o", "exit_on_error=true"
+        ]
+
+    # masked print to avoid leaking secrets
+    try:
+        print("Running:", masked_cmd_str(cmd))
+    except Exception:
+        # fallback to non-masked if something weird happens
+        print("Running:", " ".join(shlex.quote(c) for c in cmd))
+
+    env = os.environ.copy()
+    if passphrase:
+        env["PRIVATE_KEY_PASSPHRASE"] = passphrase
+
+    proc = subprocess.run(cmd, env=env)
+
+    # cleanup wrapper if created (snowsql branch)
+    if not (("snow" == client_name or client_name.startswith("snow"))):
+        try:
+            if wrapper_path and wrapper_path.exists():
+                wrapper_path.unlink()
+        except Exception:
+            pass
+
+    if proc.returncode != 0:
+        print(f"ERROR: execution failed for {sqlfile} (rc={proc.returncode})", file=sys.stderr)
+        if "snow" in client_name:
+            print("Hint: 'snow' failed. If you still see problems, paste the 'Running:' line and the full CLI error here and I'll adapt.", file=sys.stderr)
+        sys.exit(proc.returncode)
+
 # ---------- main ----------
 def main():
     parser = argparse.ArgumentParser()
@@ -333,7 +418,7 @@ def main():
         files_to_run = []
 
         if args.mode == "initial_setup":
-            schemas = [s.strip() for s in args.schemas.split(",") if s.strip()] if args.schemas else None
+            schemas = normalize_schema_tokens(args.schemas)
             candidate_files = []
             schema_folders = []
             if schemas:
@@ -374,7 +459,7 @@ def main():
                 candidates += find_jira_files()
                 obj_types_raw = [o.strip() for o in args.object_types.split(",")] if args.object_types else ["all"]
                 obj_types = [normalize_name(o) for o in obj_types_raw]
-                schemas = [s.strip() for s in args.schemas.split(",") if s.strip()] if args.schemas else None
+                schemas = normalize_schema_tokens(args.schemas)
                 candidates += find_snowflake_objects(schemas=schemas, object_types=obj_types)
                 candidates = sorted(set(candidates), key=lambda p: str(p).lower())
                 if not candidates:
