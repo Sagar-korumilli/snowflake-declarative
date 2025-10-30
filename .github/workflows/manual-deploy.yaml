@@ -22,9 +22,16 @@ jobs:
   manual-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (no persisted credentials)
+        # IMPORTANT: persist-credentials: false prevents the action from
+        # writing the GITHUB_TOKEN into .git/credentials. That allows your
+        # script to set the remote to use the PAT instead.
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
+      # Optional: configure python & install snow CLI and deps
       - name: Set up Python + snow CLI
         run: |
           python -m pip install --upgrade pip
@@ -63,7 +70,8 @@ jobs:
           SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
-          # Git auth (use your PERSONAL_ACCESS_TOKEN secret)
+
+          # **PAT used for pushing** - set this secret to your PAT (repo/push rights)
           GIT_PUSH_TOKEN:                  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           GIT_USER_NAME:                   'sagar-korumilli'
           GIT_USER_EMAIL:                  'sagar.korumilli11@gmail.com'
@@ -74,5 +82,7 @@ jobs:
             inputs="deploy/,rollback/"
           fi
 
-          # Run the DDL sync script (it will execute the SQL files and refresh DDL into the snowflake/ folder)
+          # Run the DDL sync script (parse-only by default). The script will set the git remote
+          # to include the PAT (GIT_PUSH_TOKEN) before pushing files.
           python scripts/ddl_sync.py --inputs "$inputs" --snowflake-root snowflake
+
