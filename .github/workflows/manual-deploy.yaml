@@ -47,6 +47,55 @@ jobs:
           SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+          name: Manual Snowflake Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_type:
+        description: 'initial_setup / deploy / rollback'
+        required: true
+        default: 'deploy'
+      files:
+        description: 'Comma-separated files (optional)'
+        required: false
+      schemas:
+        description: 'Comma-separated schemas (optional)'
+        required: false
+      object_types:
+        description: 'Comma-separated object types (views,functions,procedures,tables,all)'
+        required: false
+        default: 'all'
+
+jobs:
+  manual-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (no persisted credentials)
+        # IMPORTANT: persist-credentials: false prevents the action from
+        # writing the GITHUB_TOKEN into .git/credentials. That allows your
+        # script to set the remote to use the PAT instead.
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Optional: configure python & install snow CLI and deps
+      - name: Set up Python + snow CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install --user snowflake-cli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run deploy tool
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
         run: |
           python scripts/deploy_tool.py --mode "${{ github.event.inputs.deployment_type }}" \
             --files "${{ github.event.inputs.files }}" \
@@ -85,4 +134,44 @@ jobs:
           # Run the DDL sync script (parse-only by default). The script will set the git remote
           # to include the PAT (GIT_PUSH_TOKEN) before pushing files.
           python scripts/ddl_sync.py --inputs "$inputs" --snowflake-root snowflake
+
+        run: |
+          python scripts/deploy_tool.py --mode "${{ github.event.inputs.deployment_type }}" \
+            --files "${{ github.event.inputs.files }}" \
+            --schemas "${{ github.event.inputs.schemas }}" \
+            --object-types "${{ github.event.inputs.object_types }}" \
+            --non-interactive
+
+      - name: Install Python deps for DDL sync
+        run: |
+          python -m pip install --upgrade pip
+          pip install --user snowflake-connector-python
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Update DDL from Snowflake (run ddl_sync.py)
+        if: ${{ github.event.inputs.deployment_type != 'initial_setup' }}
+        env:
+          SNOWFLAKE_ACCOUNT:               ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:                  ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY:           ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+          SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+
+          # **PAT used for pushing** - set this secret to your PAT (repo/push rights)
+          GIT_PUSH_TOKEN:                  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          GIT_USER_NAME:                   'sagar-korumilli'
+          GIT_USER_EMAIL:                  'sagar.korumilli11@gmail.com'
+        run: |
+          # If user supplied files input, use it; otherwise default to scanning deploy/ and rollback/
+          inputs="${{ github.event.inputs.files }}"
+          if [ -z "$inputs" ]; then
+            inputs="deploy/,rollback/"
+          fi
+
+          # Run the DDL sync script (parse-only by default). The script will set the git remote
+          # to include the PAT (GIT_PUSH_TOKEN) before pushing files.
+          python scripts/ddl_sync.py --inputs "$inputs" --snowflake-root snowflake
+
 
