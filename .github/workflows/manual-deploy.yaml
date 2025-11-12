@@ -96,6 +96,10 @@ jobs:
           SNOWFLAKE_ROLE:                  ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE:             ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE:              ${{ secrets.SNOWFLAKE_DATABASE }}
+          # **PAT used for pushing** - set this secret to your PAT (repo/push rights)
+          GIT_PUSH_TOKEN:                  ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          GIT_USER_NAME:                   'sagar-korumilli'
+          GIT_USER_EMAIL:                  'sagar.korumilli11@gmail.com'
         run: |
           python scripts/deploy_tool.py --mode "${{ github.event.inputs.deployment_type }}" \
             --files "${{ github.event.inputs.files }}" \
@@ -173,5 +177,6 @@ jobs:
           # Run the DDL sync script (parse-only by default). The script will set the git remote
           # to include the PAT (GIT_PUSH_TOKEN) before pushing files.
           python scripts/ddl_sync.py --inputs "$inputs" --snowflake-root snowflake
+
 
 
