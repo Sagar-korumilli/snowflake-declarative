@@ -8,45 +8,35 @@ from pathlib import Path
 import requests
 from docx import Document
 
-from copilot import CopilotClient, ExternalServerConfig
+from copilot import CopilotClient, SubprocessConfig
 from copilot.session import PermissionHandler
 
-
-# -------------------------------
-# ENV VARIABLES
-# -------------------------------
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+COPILOT_GITHUB_TOKEN = os.environ["COPILOT_GITHUB_TOKEN"]
 REPO = os.environ["GITHUB_REPOSITORY"]
 BRANCH = os.environ["TARGET_BRANCH"]
 START_DATE = os.environ["START_DATE"]
 END_DATE = os.environ["END_DATE"]
-COPILOT_CLI_URL = os.environ.get("COPILOT_CLI_URL", "http://127.0.0.1:4321")
 
 OUTPUT_DIR = Path("output")
 
 
-# -------------------------------
-# DATE FILTER
-# -------------------------------
-def is_within_range(merged_at):
+def is_within_range(merged_at: str) -> bool:
     if not merged_at:
         return False
 
     merged_dt = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
     start_dt = datetime.fromisoformat(START_DATE).replace(tzinfo=timezone.utc)
     end_dt = datetime.fromisoformat(END_DATE + "T23:59:59").replace(tzinfo=timezone.utc)
-
     return start_dt <= merged_dt <= end_dt
 
 
-# -------------------------------
-# FETCH PRs
-# -------------------------------
 def fetch_prs():
     url = f"https://api.github.com/repos/{REPO}/pulls"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
 
     prs = []
@@ -60,13 +50,11 @@ def fetch_prs():
             "page": page,
         }
 
-        res = requests.get(url, headers=headers, params=params)
-
+        res = requests.get(url, headers=headers, params=params, timeout=60)
         if res.status_code != 200:
-            raise Exception(f"GitHub API failed: {res.text}")
+            raise RuntimeError(f"GitHub API failed: {res.status_code} {res.text}")
 
         data = res.json()
-
         if not data:
             break
 
@@ -74,43 +62,37 @@ def fetch_prs():
             if pr.get("merged_at") and is_within_range(pr["merged_at"]):
                 prs.append(pr)
 
+        if len(data) < 100:
+            break
+
         page += 1
 
     return prs
 
 
-# -------------------------------
-# PREPARE DATA
-# -------------------------------
 def prepare_data(prs):
     result = []
-
     for pr in prs:
         jira = re.findall(r"[A-Z]+-\d+", pr.get("title", ""))
-
-        result.append({
-            "id": ", ".join(jira) if jira else f"PR-{pr['number']}",
-            "title": pr.get("title", ""),
-            "author": pr["user"]["login"],
-            "merged_at": pr.get("merged_at", ""),
-            "url": pr.get("html_url", "")
-        })
-
+        result.append(
+            {
+                "id": ", ".join(jira) if jira else f"PR-{pr['number']}",
+                "title": pr.get("title", ""),
+                "author": pr.get("user", {}).get("login", ""),
+                "merged_at": pr.get("merged_at", ""),
+                "url": pr.get("html_url", ""),
+            }
+        )
     return result
 
 
-# -------------------------------
-# SAFE JSON PARSE
-# -------------------------------
-def extract_json(text):
+def extract_json(text: str):
     text = text.strip()
 
-    # remove markdown blocks if present
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text)
-        text = re.sub(r"```$", "", text)
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
 
-    # extract JSON object
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         text = match.group(0)
@@ -118,23 +100,25 @@ def extract_json(text):
     return json.loads(text)
 
 
-# -------------------------------
-# COPILOT AI GENERATION
-# -------------------------------
 async def generate_ai(data):
-    client = CopilotClient(ExternalServerConfig(url=COPILOT_CLI_URL))
-    await client.start()
+    client = CopilotClient(
+        SubprocessConfig(
+            github_token=COPILOT_GITHUB_TOKEN,
+            use_logged_in_user=False,
+        )
+    )
 
-    try:
+    async with client:
         session = await client.create_session(
             model="gpt-5",
             session_id=f"release-{int(datetime.now().timestamp())}",
-            on_permission_request=PermissionHandler.approve_all
+            on_permission_request=PermissionHandler.approve_all,
         )
 
         prompt = f"""
-Generate release notes in JSON format:
+Generate release notes in JSON format only.
 
+Return exactly:
 {{
   "introduction": "short intro",
   "dependencies": "dependencies if any",
@@ -145,40 +129,32 @@ Rules:
 - Keep it short and professional
 - Do not include markdown
 - Return ONLY JSON
+- Align rows with the PR data below
 
-Data:
+PR data:
 {json.dumps(data, indent=2)}
 """
 
-        response = await session.send_and_wait({"prompt": prompt})
-
+        response = await session.send_and_wait(prompt)
         return extract_json(response.data.content)
 
-    finally:
-        await client.stop()
 
-
-# -------------------------------
-# CREATE WORD DOCUMENT
-# -------------------------------
 def create_doc(ai, data):
     OUTPUT_DIR.mkdir(exist_ok=True)
 
     doc = Document()
     doc.add_heading(f"Release Notes - {BRANCH}", 0)
 
-    # Introduction
-    doc.add_heading("1. Introduction", 1)
+    doc.add_heading("1. Introduction", level=1)
     doc.add_paragraph(ai.get("introduction", "N/A"))
 
-    # Dependencies
-    doc.add_heading("2. Dependencies", 1)
+    doc.add_heading("2. Dependencies", level=1)
     doc.add_paragraph(ai.get("dependencies", "N/A"))
 
-    # Table
-    doc.add_heading("3. Summary", 1)
+    doc.add_heading("3. Summary", level=1)
 
     table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
     headers = ["ID", "Description", "Author", "Merged Date", "Link"]
 
     for i, h in enumerate(headers):
@@ -194,32 +170,25 @@ def create_doc(ai, data):
 
     file_path = OUTPUT_DIR / f"pr-summary-{BRANCH}.docx"
     doc.save(file_path)
-
     print(f"Saved: {file_path}")
 
 
-# -------------------------------
-# MAIN
-# -------------------------------
 async def main():
     print("Fetching PRs...")
     prs = fetch_prs()
-
     print(f"Filtered PRs: {len(prs)}")
 
     data = prepare_data(prs)
 
-    # ✅ HANDLE EMPTY CASE (fix for your error)
     if not data:
         print("No PRs found in date range.")
-
         create_doc(
             {
-                "introduction": "No merged PRs found for selected branch and date range.",
+                "introduction": "No merged PRs found for the selected branch and date range.",
                 "dependencies": "N/A",
-                "rows": []
+                "rows": [],
             },
-            data
+            data,
         )
         return
 
