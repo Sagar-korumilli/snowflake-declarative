@@ -7,11 +7,9 @@ on:
         description: "Branch to summarize"
         required: true
         default: "main"
-
       start_date:
         description: "Start date (YYYY-MM-DD)"
         required: true
-
       end_date:
         description: "End date (YYYY-MM-DD)"
         required: true
@@ -28,26 +26,10 @@ jobs:
       TARGET_BRANCH: ${{ inputs.target_branch }}
       START_DATE: ${{ inputs.start_date }}
       END_DATE: ${{ inputs.end_date }}
-      COPILOT_CLI_URL: http://127.0.0.1:4321
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Setup Node (Copilot CLI)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install Copilot CLI
-        run: npm install -g @github/copilot
-
-      - name: Start Copilot CLI
-        env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-        run: |
-          nohup copilot --headless --port 4321 > copilot.log 2>&1 &
-          sleep 8
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -56,11 +38,13 @@ jobs:
 
       - name: Install Python dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install requests python-docx github-copilot-sdk
 
       - name: Run script
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: python scripts/generate_pr_summary.py
 
       - name: Upload document
