@@ -4,5 +4,5 @@ CREATE OR REPLACE TABLE hr.employees2 (
   last_name STRING,
   hire_date DATE,
   department STRING,
-  name  STRING
+  NAME STRING
 );
