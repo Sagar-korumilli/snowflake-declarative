@@ -110,7 +110,7 @@ async def generate_ai(data):
 
     async with client:
         session = await client.create_session(
-            model="gpt-5",
+            model="gpt-4.1",
             session_id=f"release-{int(datetime.now().timestamp())}",
             on_permission_request=PermissionHandler.approve_all,
         )
