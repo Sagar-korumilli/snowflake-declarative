@@ -2,45 +2,52 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 from docx import Document
-from copilot import CopilotClient
+
+from copilot import CopilotClient, ExternalServerConfig
 from copilot.session import PermissionHandler
 
+
+# -------------------------------
 # ENV VARIABLES
+# -------------------------------
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO = os.environ["GITHUB_REPOSITORY"]
 BRANCH = os.environ["TARGET_BRANCH"]
 START_DATE = os.environ["START_DATE"]
 END_DATE = os.environ["END_DATE"]
-COPILOT_CLI_URL = os.environ["COPILOT_CLI_URL"]
+COPILOT_CLI_URL = os.environ.get("COPILOT_CLI_URL", "http://127.0.0.1:4321")
 
 OUTPUT_DIR = Path("output")
 
 
 # -------------------------------
-# Date filter
+# DATE FILTER
 # -------------------------------
 def is_within_range(merged_at):
     if not merged_at:
         return False
 
     merged_dt = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
-    start_dt = datetime.fromisoformat(START_DATE)
-    end_dt = datetime.fromisoformat(END_DATE + "T23:59:59")
+    start_dt = datetime.fromisoformat(START_DATE).replace(tzinfo=timezone.utc)
+    end_dt = datetime.fromisoformat(END_DATE + "T23:59:59").replace(tzinfo=timezone.utc)
 
     return start_dt <= merged_dt <= end_dt
 
 
 # -------------------------------
-# Fetch PRs
+# FETCH PRs
 # -------------------------------
 def fetch_prs():
     url = f"https://api.github.com/repos/{REPO}/pulls"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
 
     prs = []
     page = 1
@@ -50,10 +57,14 @@ def fetch_prs():
             "state": "closed",
             "base": BRANCH,
             "per_page": 100,
-            "page": page
+            "page": page,
         }
 
         res = requests.get(url, headers=headers, params=params)
+
+        if res.status_code != 200:
+            raise Exception(f"GitHub API failed: {res.text}")
+
         data = res.json()
 
         if not data:
@@ -69,61 +80,86 @@ def fetch_prs():
 
 
 # -------------------------------
-# Prepare data
+# PREPARE DATA
 # -------------------------------
 def prepare_data(prs):
     result = []
 
     for pr in prs:
-        jira = re.findall(r"[A-Z]+-\d+", pr["title"] or "")
+        jira = re.findall(r"[A-Z]+-\d+", pr.get("title", ""))
 
         result.append({
             "id": ", ".join(jira) if jira else f"PR-{pr['number']}",
-            "title": pr["title"],
+            "title": pr.get("title", ""),
             "author": pr["user"]["login"],
-            "merged_at": pr["merged_at"],
-            "url": pr["html_url"]
+            "merged_at": pr.get("merged_at", ""),
+            "url": pr.get("html_url", "")
         })
 
     return result
 
 
 # -------------------------------
-# Copilot SDK
+# SAFE JSON PARSE
+# -------------------------------
+def extract_json(text):
+    text = text.strip()
+
+    # remove markdown blocks if present
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text)
+        text = re.sub(r"```$", "", text)
+
+    # extract JSON object
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+
+    return json.loads(text)
+
+
+# -------------------------------
+# COPILOT AI GENERATION
 # -------------------------------
 async def generate_ai(data):
-    client = CopilotClient({"cli_url": COPILOT_CLI_URL})
+    client = CopilotClient(ExternalServerConfig(url=COPILOT_CLI_URL))
     await client.start()
 
     try:
         session = await client.create_session(
             model="gpt-5",
-            session_id="release-notes",
+            session_id=f"release-{int(datetime.now().timestamp())}",
             on_permission_request=PermissionHandler.approve_all
         )
 
         prompt = f"""
-        Generate release notes in JSON:
+Generate release notes in JSON format:
 
-        {{
-          "introduction": "...",
-          "dependencies": "...",
-          "rows": []
-        }}
+{{
+  "introduction": "short intro",
+  "dependencies": "dependencies if any",
+  "rows": []
+}}
 
-        Data:
-        {json.dumps(data)}
-        """
+Rules:
+- Keep it short and professional
+- Do not include markdown
+- Return ONLY JSON
+
+Data:
+{json.dumps(data, indent=2)}
+"""
 
         response = await session.send_and_wait({"prompt": prompt})
-        return json.loads(response.data.content)
+
+        return extract_json(response.data.content)
 
     finally:
         await client.stop()
 
 
 # -------------------------------
-# Generate Word document
+# CREATE WORD DOCUMENT
 # -------------------------------
 def create_doc(ai, data):
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -131,12 +167,15 @@ def create_doc(ai, data):
     doc = Document()
     doc.add_heading(f"Release Notes - {BRANCH}", 0)
 
+    # Introduction
     doc.add_heading("1. Introduction", 1)
-    doc.add_paragraph(ai.get("introduction", ""))
+    doc.add_paragraph(ai.get("introduction", "N/A"))
 
+    # Dependencies
     doc.add_heading("2. Dependencies", 1)
-    doc.add_paragraph(ai.get("dependencies", ""))
+    doc.add_paragraph(ai.get("dependencies", "N/A"))
 
+    # Table
     doc.add_heading("3. Summary", 1)
 
     table = doc.add_table(rows=1, cols=5)
@@ -169,6 +208,20 @@ async def main():
     print(f"Filtered PRs: {len(prs)}")
 
     data = prepare_data(prs)
+
+    # ✅ HANDLE EMPTY CASE (fix for your error)
+    if not data:
+        print("No PRs found in date range.")
+
+        create_doc(
+            {
+                "introduction": "No merged PRs found for selected branch and date range.",
+                "dependencies": "N/A",
+                "rows": []
+            },
+            data
+        )
+        return
 
     print("Generating AI content...")
     ai = await generate_ai(data)
