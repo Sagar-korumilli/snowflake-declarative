@@ -1,4 +1,3 @@
-# Full Python Script — client-style release notes with better table layout
 
 import asyncio
 import json
@@ -257,7 +256,9 @@ def create_doc(ai, data):
     # Title
     title = doc.add_paragraph()
     title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-    run = title.add_run("Release Management\nDocument - Release Notes\nfor Dev Main Branch")
+    branch_display = BRANCH.replace("-", " ").replace("_", " ").title()
+
+    run = title.add_run( f"Release Management\nDocument - Release Notes\nfor {branch_display} Branch" )
     apply_font(run, size=24, bold=False)
 
     doc.add_paragraph("")
@@ -341,3 +342,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
