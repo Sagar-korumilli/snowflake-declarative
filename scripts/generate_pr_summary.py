@@ -1,4 +1,4 @@
-# Full Python Script — simplified client-style release notes
+# Full Python Script — client-style release notes with better table layout
 
 import asyncio
 import json
@@ -9,6 +9,7 @@ from pathlib import Path
 
 import requests
 from docx import Document
+from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.shared import Inches, Pt
@@ -45,21 +46,26 @@ def apply_font(run, size=None, bold=None, italic=None):
 
 
 def set_document_font(doc):
-    styles = ["Normal", "Title", "Heading 1", "Heading 2", "Heading 3"]
-    for style_name in styles:
+    for style_name, size in [
+        ("Normal", 12),
+        ("Title", 24),
+        ("Heading 1", 16),
+        ("Heading 2", 14),
+        ("Heading 3", 12),
+    ]:
         if style_name in doc.styles:
             style = doc.styles[style_name]
             style.font.name = FONT_NAME
-            if style_name == "Normal":
-                style.font.size = Pt(12)
-            elif style_name == "Title":
-                style.font.size = Pt(24)
-            elif style_name == "Heading 1":
-                style.font.size = Pt(16)
-            elif style_name == "Heading 2":
-                style.font.size = Pt(14)
-            elif style_name == "Heading 3":
-                style.font.size = Pt(12)
+            style.font.size = Pt(size)
+
+
+def set_landscape(section):
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = section.page_height, section.page_width
+    section.top_margin = Inches(0.45)
+    section.bottom_margin = Inches(0.45)
+    section.left_margin = Inches(0.45)
+    section.right_margin = Inches(0.45)
 
 
 def add_paragraph_with_font(doc, text, size=12, bold=False, italic=False, align=None):
@@ -75,22 +81,29 @@ def add_heading_with_font(doc, text, level=1):
     p = doc.add_paragraph()
     if level == 1:
         p.style = doc.styles["Heading 1"]
+        size = 16
     elif level == 2:
         p.style = doc.styles["Heading 2"]
-    elif level == 3:
+        size = 14
+    else:
         p.style = doc.styles["Heading 3"]
+        size = 12
+
     run = p.add_run(text)
-    apply_font(run, size=16 if level == 1 else 14 if level == 2 else 12, bold=True)
+    apply_font(run, size=size, bold=True)
     return p
 
 
-def format_cell(cell, text, size=11, bold=False, align=WD_PARAGRAPH_ALIGNMENT.LEFT):
+def format_cell(cell, text, size=10, bold=False, align=WD_PARAGRAPH_ALIGNMENT.LEFT):
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = align
+    p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.line_spacing = 1.0
     run = p.add_run(text if text else "N/A")
     apply_font(run, size=size, bold=bold)
-    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
 
 
 # -------------------------
@@ -153,16 +166,26 @@ def prepare_data(prs):
     result = []
     for pr in prs:
         jira = re.findall(r"[A-Z]+-\d+", pr.get("title", "") or "")
+        merged_at = pr.get("merged_at", "")
         result.append(
             {
                 "id": ", ".join(jira) if jira else f"PR-{pr['number']}",
                 "title": pr.get("title", ""),
                 "author": (pr.get("user") or {}).get("login", ""),
-                "merged_at": pr.get("merged_at", ""),
+                "merged_at": format_merge_date(merged_at),
                 "url": pr.get("html_url", ""),
             }
         )
     return result
+
+
+def format_merge_date(merged_at):
+    """Make the merge date shorter and more readable for the table."""
+    try:
+        dt = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return merged_at or "N/A"
 
 
 # -------------------------
@@ -227,12 +250,9 @@ def create_doc(ai, data):
     doc = Document()
     set_document_font(doc)
 
-    # Page margins a little tighter for a corporate report feel
+    # Landscape layout gives the table enough width for clean alignment.
     section = doc.sections[0]
-    section.top_margin = Inches(0.6)
-    section.bottom_margin = Inches(0.6)
-    section.left_margin = Inches(0.7)
-    section.right_margin = Inches(0.7)
+    set_landscape(section)
 
     # Title
     title = doc.add_paragraph()
@@ -266,24 +286,26 @@ def create_doc(ai, data):
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
 
-    widths = [1.0, 3.9, 1.25, 1.25, 2.35]
+    # Column widths tuned for landscape page.
+    col_widths = [1.15, 4.0, 1.45, 1.7, 2.0]
     headers = ["Track ID", "Description", "Author", "Merge Date", "Reference"]
 
-    for i, width in enumerate(widths):
+    for i, width in enumerate(col_widths):
+        table.columns[i].width = Inches(width)
         for cell in table.columns[i].cells:
             cell.width = Inches(width)
 
     hdr_cells = table.rows[0].cells
     for i, header in enumerate(headers):
-        format_cell(hdr_cells[i], header, size=11, bold=True)
+        format_cell(hdr_cells[i], header, size=10, bold=True, align=WD_PARAGRAPH_ALIGNMENT.CENTER)
 
     for pr in data:
         row = table.add_row().cells
-        format_cell(row[0], pr["id"], size=10)
-        format_cell(row[1], pr["title"], size=10)
-        format_cell(row[2], pr["author"], size=10)
-        format_cell(row[3], pr["merged_at"], size=10)
-        format_cell(row[4], pr["url"], size=10)
+        format_cell(row[0], pr["id"], size=9)
+        format_cell(row[1], pr["title"], size=9)
+        format_cell(row[2], pr["author"], size=9)
+        format_cell(row[3], pr["merged_at"], size=9)
+        format_cell(row[4], pr["url"], size=9)
 
     file_path = OUTPUT_DIR / f"pr-summary-{BRANCH}.docx"
     doc.save(file_path)
